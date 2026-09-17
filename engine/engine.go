@@ -353,8 +353,11 @@ type Config struct {
 	WorkDir     string   // working directory for built-in tools
 
 	// AppendSystemPrompt carries OPERATOR-supplied system prompt segments —
-	// environment truth the agent cannot otherwise discover (a gateway URL
-	// template, a required bind address), not tool shape. Each entry becomes
+	// platform truth the agent cannot otherwise discover (a gateway URL
+	// template, a required bind address) and the platform policy that
+	// depends on it, never project instructions and never tool shape (an MCP
+	// server states its own usage through initialize instructions, rendered
+	// as their own segment — see mcp_instructions.go). Each entry becomes
 	// one system segment, in order, directly after System and before every
 	// engine-assembled segment (tool batching, instructions, skills, the MCP
 	// catalog, plugin transforms). Config key `append_system_prompt` (see
@@ -364,7 +367,12 @@ type Config struct {
 	// Unlike System, these segments DO travel to the delegated Claude Code
 	// CLI, as one blank-line-joined --append-system-prompt value — see
 	// runClaudeCodeTurn: Claude Code receives no native system prompt, so it
-	// needs environment facts without native-tool instructions.
+	// needs environment facts without native-tool instructions. Every segment
+	// must be byte-stable for the life of a session: they sit at the front of
+	// the prompt-cache prefix on both lanes, so a value that varies between
+	// turns silently re-processes the whole conversation uncached. See
+	// config.Config.AppendSystemPrompt and withPinnedAmbient for where
+	// changing text belongs instead.
 	AppendSystemPrompt []string
 
 	// ClaudeCode configures the delegated-turn backend a session whose
@@ -1342,6 +1350,16 @@ type Session struct {
 	skillsLoaded bool
 	skillsSeg    string
 	skillsErr    error
+
+	// Connected-MCP-server instructions segment (see mcp_instructions.go),
+	// rendered once on the first request that reaches segment assembly and
+	// then frozen for the session. Frozen deliberately: this text sits in
+	// the SYSTEM array, so re-rendering it when a server's connection state
+	// changes would rewrite the cached prefix mid-session and re-process the
+	// whole conversation uncached. Liveness has its own channel that costs
+	// nothing to change (mcpStatusSegment). Guarded by mu.
+	mcpInstrLoaded bool
+	mcpInstrSeg    string
 
 	// Goal-loop state (see goal.go). goalActive is set while a goal is set but
 	// neither achieved nor cleared; goalCondition holds the current goal's
@@ -3198,7 +3216,8 @@ func (s *Session) assembleRequest(ctx context.Context) (*assembledRequest, error
 	if err != nil {
 		return nil, err
 	}
-	tools, mcpCatalog := s.toolDefsWithCatalog(ctx)
+	tools, mcpCatalog, mcpServers := s.toolDefsWithCatalog(ctx)
+	instrSeg := s.mcpInstructionsSegmentFrom(mcpServers)
 
 	system := append([]string(nil), s.cfg.System...)
 	system = append(system, s.cfg.AppendSystemPrompt...)
@@ -3210,6 +3229,9 @@ func (s *Session) assembleRequest(ctx context.Context) (*assembledRequest, error
 	}
 	if seg := s.skillsSegment(); seg != "" {
 		system = append(system, seg)
+	}
+	if instrSeg != "" {
+		system = append(system, instrSeg)
 	}
 	if mcpCatalog != "" {
 		system = append(system, mcpCatalog)
@@ -3282,9 +3304,6 @@ func (s *Session) streamTurn(ctx context.Context, attempt int) (*message.Message
 	params := assembled.params
 	system := req.System
 	tools := req.Tools
-	// Ambient status rides this in-memory request copy only: s.History()
-	// returns a fresh slice and withPinnedAmbient appends to it, so the
-	// durable s.history and the journal never see this text.
 	//
 	// The tool plan already ran above (see the numbered ordering note at the
 	// top of this function), so every segment below reads post-connect
@@ -3925,7 +3944,7 @@ func (e *emptyTurnError) Error() string {
 // deliberately gathers tool names before its own Lock, and streamTurn builds
 // the whole request before its s.mu section.
 func (s *Session) toolDefs(ctx context.Context) []provider.ToolDef {
-	defs, _ := s.toolDefsWithCatalog(ctx)
+	defs, _, _ := s.toolDefsWithCatalog(ctx)
 	return defs
 }
 
@@ -3938,7 +3957,7 @@ func (s *Session) toolDefs(ctx context.Context) []provider.ToolDef {
 //
 // The catalog is "" whenever nothing is deferred, which includes every
 // session that did not opt into deferral at all.
-func (s *Session) toolDefsWithCatalog(ctx context.Context) ([]provider.ToolDef, string) {
+func (s *Session) toolDefsWithCatalog(ctx context.Context) ([]provider.ToolDef, string, map[string]bool) {
 	defs := make([]provider.ToolDef, 0, len(s.tools))
 	for _, t := range s.tools {
 		defs = append(defs, t.Def)
@@ -3955,7 +3974,7 @@ func (s *Session) toolDefsWithCatalog(ctx context.Context) ([]provider.ToolDef, 
 			})
 		}
 	}
-	return defs, plan.catalog
+	return defs, plan.catalog, plan.servers
 }
 
 // runToolCalls executes every tool call in an assistant message and returns
