@@ -289,6 +289,118 @@ func TestResolveSession(t *testing.T) {
 	})
 }
 
+// TestRunCmdControlCommandNeedsHistory pins spec §5's "no prior history"
+// rule (docs/design/slash-commands.md, §5 "Dispatch"): `harness run` with
+// neither -resume nor -continue has no prior session for a control command
+// to act on.
+// Commit 6364df3 fixed only the /compact symptom, through SkipReason;
+// /thinking (and /model, /tier) on a fresh session still created a
+// throwaway session, mutated it, persisted it, and exited 0. The
+// session-dir-stays-empty assertion is the one that matters: it pins that
+// dispatchCommand never ran and nothing was persisted, not just that
+// runCmd returned an error.
+func TestRunCmdControlCommandNeedsHistory(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	sessDir := t.TempDir()
+	t.Chdir(workDir)
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_CONFIG", "")
+	t.Setenv("HARNESS_SESSION_DIR", sessDir)
+
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runCmd([]string{"-p", "/thinking high"})
+	})
+	if runErr == nil {
+		t.Fatal("runCmd returned nil for a control command with neither -resume nor -cont")
+	}
+	if !strings.Contains(runErr.Error(), "needs an existing session") {
+		t.Errorf("error = %q, want it to say a control command needs an existing session", runErr)
+	}
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		t.Fatalf("reading session dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("session dir has %d entries after a refused control command, want 0 (nothing should have been persisted)", len(entries))
+	}
+}
+
+// TestRunCmdUnsupportedOpReportsUnsupportedFirst pins the refusal order for
+// an Op run mode never supports (runModeOps[op] == false): it must report
+// "not available in this mode", never the -resume/-continue advice, because
+// no session — existing or not — would let run mode perform it.
+func TestRunCmdUnsupportedOpReportsUnsupportedFirst(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	sessDir := t.TempDir()
+	t.Chdir(workDir)
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_CONFIG", "")
+	t.Setenv("HARNESS_SESSION_DIR", sessDir)
+
+	var runErr error
+	captureStdout(t, func() {
+		runErr = runCmd([]string{"-p", "/status"})
+	})
+	if runErr == nil {
+		t.Fatal("runCmd returned nil for an Op run mode does not support")
+	}
+	if !strings.Contains(runErr.Error(), "not available in this mode") {
+		t.Errorf("error = %q, want it to say the op is not available in this mode", runErr)
+	}
+	if strings.Contains(runErr.Error(), "-resume") || strings.Contains(runErr.Error(), "-continue") {
+		t.Errorf("error = %q, should not advise -resume/-continue for an Op run mode never supports", runErr)
+	}
+}
+
+// TestRunCmdRefusedCommandNeverLoadsConfig pins that a control command
+// refused for lacking -resume/-continue fails before runCmd does ANY of
+// the work building a session requires, not merely before that session
+// gets persisted. resolveSession builds a fresh engine.Session that starts
+// asynchronous startup prewarm (engine/startup_prewarm.go), which can read
+// disk, invoke hooks, connect MCP dependencies, and use the network for an
+// eligible provider — work a refused run must never start.
+//
+// loadConfigLogged, which runs strictly before resolveSession, always
+// emits exactly one slog line (logConfigSummary): "no config file found"
+// here, since HARNESS_CONFIG is unset and workDir holds none. Its absence
+// from stderr is the signal that the refusal returned before that call,
+// and therefore before resolveSession and prewarm ever ran.
+func TestRunCmdRefusedCommandNeverLoadsConfig(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	sessDir := t.TempDir()
+	t.Chdir(workDir)
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_CONFIG", "")
+	t.Setenv("HARNESS_SESSION_DIR", sessDir)
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			runErr = runCmd([]string{"-p", "/thinking high"})
+		})
+	})
+	if runErr == nil {
+		t.Fatal("runCmd returned nil for a control command with neither -resume nor -cont")
+	}
+	if !strings.Contains(runErr.Error(), "needs an existing session") {
+		t.Errorf("error = %q, want it to say a control command needs an existing session", runErr)
+	}
+	if strings.Contains(stderr, "no config file found") || strings.Contains(stderr, `"config:`) {
+		t.Errorf("stderr = %q, want no config-load log line: a refused command must return before loadConfigLogged runs", stderr)
+	}
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		t.Fatalf("reading session dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("session dir has %d entries after a refused control command, want 0", len(entries))
+	}
+}
+
 func TestFormatSessions(t *testing.T) {
 	t.Run("empty list yields no output", func(t *testing.T) {
 		if got := formatSessions(nil); got != "" {

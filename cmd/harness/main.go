@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/majorcontext/harness/command"
 	"github.com/majorcontext/harness/config"
 	"github.com/majorcontext/harness/engine"
 	"github.com/majorcontext/harness/message"
@@ -625,6 +626,32 @@ func runCmd(args []string) error {
 	case opts.prompt != "" && opts.goal != "":
 		return fmt.Errorf("-p and -goal are mutually exclusive")
 	}
+	// Registry.Resolve is pure (no I/O, no session), so it runs before any
+	// session exists. A command this run will refuse outright — unknown,
+	// surplus arguments, unsupported in this mode, a frontend command, or a
+	// control command with neither -resume nor -continue — must fail here,
+	// before resolveSession below builds and prewarms a session for a run
+	// that was always going to be refused. Only a command that will
+	// actually be dispatched, or ordinary text, reaches resolveSession.
+	var res command.Resolution
+	var resErr error
+	if opts.goal == "" {
+		res, resErr = command.NewRegistry().Resolve(opts.prompt)
+		switch {
+		case resErr == nil:
+			// unsupported-in-run-mode is reported before the
+			// needs-a-session advice: advising -resume for an Op run mode
+			// cannot perform at all is a dead end.
+			if err := checkRunModeSupport(res); err != nil {
+				return err
+			}
+			if opts.resume == "" && !opts.cont {
+				return fmt.Errorf("/%s needs an existing session: pass -resume or -continue, or drop the command and send a plain prompt", resName(res))
+			}
+		case !errors.Is(resErr, command.ErrNotCommand):
+			return resErr
+		}
+	}
 	// Structured logging: JSON to stderr, stdlib log/slog only (no new
 	// dependency), exactly like serveCmd — built solely to carry the one
 	// config-load summary line (see loadConfigLogged); run mode has no
@@ -780,16 +807,22 @@ func runCmd(args []string) error {
 			return err
 		}
 		goalNotAchieved = !res.Achieved
+	} else if resErr == nil {
+		// res was already resolved and refusal-checked above, before s was
+		// built: only a command that will actually run reaches here.
+		if derr := dispatchCommand(ctx, s, res); derr != nil {
+			return derr
+		}
 	} else {
-		// ReportTurnStart/ReportTurnEnd bracket this bare Prompt call —
-		// see runGoal's identical bracket (and its doc comment) for why:
-		// without it, a `task` child that finishes while this Prompt call
-		// is still in flight would find s "idle" from SessionManager's
-		// point of view and fire a concurrent resume turn on the SAME
-		// session this call is still driving. resume is fired
-		// synchronously if non-nil, exactly like runGoal's own tail.
+		// ReportTurnStart/ReportTurnEnd bracket this bare Prompt call — see
+		// runGoal's identical bracket (and its doc comment) for why: without
+		// it, a `task` child that finishes while this Prompt call is still
+		// in flight would find s "idle" from SessionManager's point of view
+		// and fire a concurrent resume turn on the SAME session this call
+		// is still driving. resume is fired synchronously if non-nil,
+		// exactly like runGoal's own tail.
 		sessMgr.ReportTurnStart(s)
-		msg, promptErr := s.Prompt(ctx, opts.prompt)
+		msg, promptErr := s.Prompt(ctx, res.Text)
 		resume := sessMgr.ReportTurnEnd(s.ID, msg, promptErr)
 		if promptErr != nil {
 			return promptErr
