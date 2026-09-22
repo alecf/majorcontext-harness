@@ -83,6 +83,27 @@ type ClaudeCodeConfig struct {
 	// server.Options.Unauthenticated) omits the header entirely rather
 	// than sending an empty bearer value.
 	HTTPAuthToken string
+	// AskUserQuestion declares that the embedder can render and answer a
+	// structured question (Session.AnswerQuestion). A parked question that
+	// nothing answers strands the session, so the tool stays absent unless
+	// this is set.
+	AskUserQuestion bool
+}
+
+// ErrNoPendingQuestion is AnswerQuestion's error when callID does not name
+// the session's parked question.
+var ErrNoPendingQuestion = errors.New("engine: no pending question with that call id")
+
+// PendingQuestion returns the tool-call id of the AskUserQuestion call a
+// delegated turn parked on, or "" when nothing is waiting for an answer.
+func (s *Session) PendingQuestion() string {
+	return ""
+}
+
+// AnswerQuestion resumes the delegated turn parked on callID. answers maps
+// each question's text to the chosen option label or free text.
+func (s *Session) AnswerQuestion(ctx context.Context, callID string, answers map[string]string) (*message.Message, error) {
+	return nil, ErrNoPendingQuestion
 }
 
 // claudeCodeToolsServerName is the synthetic --mcp-config server name
@@ -633,7 +654,7 @@ func (s *Session) runClaudeCodeTurn(ctx context.Context) (*message.Message, erro
 		_ = proc.Kill()
 	}()
 
-	finalMsg, started, turnErr, zeroMessageOK := s.consumeClaudeCodeStream(stdout, model)
+	finalMsg, started, turnErr, zeroMessageOK := s.consumeClaudeCodeStream(stdout, model, nil)
 	// No more input is coming for this child (mirrors the single-string
 	// SDK path's own endInput()-on-first-"result" call — see the pump
 	// goroutine's own doc comment above): signal it to stop, THEN close
@@ -959,7 +980,7 @@ func claudeCodeHistoryDirectiveArgs(history []message.Message, watermark int) []
 // child's process group: that would kill the very background session
 // --bg exists to keep alive. See runClaudeCodeTurn's own comment on why
 // its subsequent cmd.Wait() does not reintroduce this wait.
-func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (finalMsg *message.Message, started bool, turnErr error, zeroMessageOK bool) {
+func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, respond func([]byte)) (finalMsg *message.Message, started bool, turnErr error, zeroMessageOK bool) {
 	var compactBoundarySeen, compactUnsettled bool
 	settleCompaction := func() {
 		if compactUnsettled {
