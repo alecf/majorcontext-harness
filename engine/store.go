@@ -1958,7 +1958,7 @@ func LoadSession(cfg Config, id string) (*Session, error) {
 	// bypassed that path entirely (an older binary, a plugin, or an
 	// external writer). The repair is re-derived deterministically on every
 	// load; the log itself stays append-only and unmodified.
-	s.history = message.ResolveOrphanToolCalls(s.history)
+	s.history = message.ResolveOrphanToolCallsExcept(s.history, s.claudeCodePendingQuestion)
 	// newSession already resolved s.cfg.ContextWindowTokens/contextWindowSource
 	// once, against cfg.Model — but a recModel record above may have moved
 	// s.model to whatever this session was last switched to, in an earlier

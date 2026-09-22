@@ -605,6 +605,16 @@ question (`Session.PendingQuestion`). The server records `turn.end` with
 outcome `awaiting_input` and `question_call_id`. A parked turn is not an
 error.
 
+A parked question survives a restart. `LoadSession` restores the pending
+call id, and the server restores `last_turn` from its event journal. The
+answer resumes the CLI's own session file under `~/.claude/projects`, so
+the feature requires a durable `HOME`. A consumer with an ephemeral `HOME`
+loses the parked question when the process restarts.
+
+The load-time orphan repair skips the pending call id. The call has no
+result yet by design, so a synthetic error result would read as its
+outcome. Every other orphaned call is still repaired.
+
 ### Answer
 
 `POST /session/{id}/question/{call_id}/answer` with
