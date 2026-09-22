@@ -60,7 +60,7 @@ func TestClaudeCodeUnansweredPermissionRequestIsDenied(t *testing.T) {
 	frames := `{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_b","input":{}}}` + "\n" +
 		`{"type":"result","subtype":"success","num_turns":1}` + "\n"
 	var sent []string
-	s.consumeClaudeCodeStream(strings.NewReader(frames), s.Model(), func(b []byte) { sent = append(sent, string(b)) })
+	s.consumeClaudeCodeStream(strings.NewReader(frames), s.Model(), nil, func(b []byte) { sent = append(sent, string(b)) })
 	if len(sent) != 1 {
 		t.Fatalf("control responses sent = %d, want 1: %q", len(sent), sent)
 	}
