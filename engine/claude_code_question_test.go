@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/majorcontext/harness/message"
 )
 
 // TestClaudeCodeAskUserQuestionGate pins the reported problem: without
@@ -101,9 +103,14 @@ func TestClaudeCodeAnswerResumesParkedQuestion(t *testing.T) {
 // TestClaudeCodePromptDismissesParkedQuestion pins the lost-reply hazard: a
 // resumed CLI re-runs its deferred call before it reads stdin, so a prompt
 // written on that turn is answered in a second result harness never reads.
-// The parked call must be dismissed first, with no text on that child.
+// The parked call must be dismissed first, with no text on that child. The
+// fake dismisses the way the real CLI does, with an error result, no init,
+// and exit 1, none of which may surface as the turn's error, a metrics
+// record, or a history directive on the turn after it.
 func TestClaudeCodePromptDismissesParkedQuestion(t *testing.T) {
 	s, stdinLog := claudeCodeQuestionSession(t)
+	var metrics int
+	s.cfg.OnTurnMetrics = func(TurnMetrics) { metrics++ }
 	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -121,6 +128,77 @@ func TestClaudeCodePromptDismissesParkedQuestion(t *testing.T) {
 	}
 	if s.PendingQuestion() != "" || msg.Parts.Text() != "Done — it printed hi." {
 		t.Errorf("after dismissal PendingQuestion()=%q reply=%q, want empty and the new turn's reply", s.PendingQuestion(), msg.Parts.Text())
+	}
+	if metrics != 2 {
+		t.Errorf("turn metrics records = %d, want 2: the dismissal made no provider call", metrics)
+	}
+	assertNoHistoryDirective(t)
+}
+
+// TestClaudeCodeParkedQuestionSurvivesReload pins the restart defect:
+// LoadSession synthesizes an orphan tool result for a parked question's call
+// id. The call is not orphaned, it is waiting, and the answer that arrives
+// later must be its only result.
+func TestClaudeCodeParkedQuestionSurvivesReload(t *testing.T) {
+	s, _ := claudeCodeQuestionSession(t)
+	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	r, err := LoadSession(s.cfg, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := questionResults(r); got != 0 || r.PendingQuestion() != "toolu_q" {
+		t.Fatalf("after reload: %d results for toolu_q, PendingQuestion()=%q; want 0 and toolu_q", got, r.PendingQuestion())
+	}
+	if ix, err := ReadSessionIndex(s.cfg.SessionDir, s.ID); err != nil || ix.Messages != len(r.History()) {
+		t.Errorf("index Messages = %d (err %v), want LoadSession's %d", ix.Messages, err, len(r.History()))
+	}
+	if _, err := r.AnswerQuestion(context.Background(), "toolu_q", map[string]string{"Which database?": "SQLite"}); err != nil {
+		t.Fatalf("AnswerQuestion: %v", err)
+	}
+	if got := questionResults(r); got != 1 {
+		t.Errorf("results for toolu_q after the answer = %d, want 1", got)
+	}
+}
+
+// TestClaudeCodeDismissAfterReloadSendsNoHistoryDirective pins the
+// watermark after a reload: the dismissal's own result must not read as
+// conversation the resumed CLI session has not seen.
+func TestClaudeCodeDismissAfterReloadSendsNoHistoryDirective(t *testing.T) {
+	s, _ := claudeCodeQuestionSession(t)
+	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	r, err := LoadSession(s.cfg, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if _, err := r.Prompt(context.Background(), "use the default"); err != nil {
+		t.Fatalf("Prompt after reload: %v", err)
+	}
+	assertNoHistoryDirective(t)
+}
+
+func questionResults(s *Session) int {
+	n := 0
+	for _, m := range s.History() {
+		for _, p := range m.Parts {
+			if tr, ok := p.(*message.ToolResult); ok && tr.CallID == "toolu_q" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// assertNoHistoryDirective checks the newest child: every turn in these
+// tests runs on the same CLI session, so none may ask it to re-read history.
+func assertNoHistoryDirective(t *testing.T) {
+	t.Helper()
+	invocations := readInvocations(t, os.Getenv("FAKE_CLAUDE_LOG"))
+	if argv := invocations[len(invocations)-1]; argvContains(argv, claudeCodeHistoryDirective) {
+		t.Errorf("last child was sent the get_conversation_history directive: %v", argv)
 	}
 }
 

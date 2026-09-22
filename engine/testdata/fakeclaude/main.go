@@ -284,6 +284,25 @@ func main() {
 				"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "tool_use_id": "toolu_q", "input": ask}})
 			line, _ := readStdinLine()
 			_ = os.Remove(questionState)
+			var reply struct {
+				Response struct {
+					Response struct {
+						Message   string `json:"message"`
+						Interrupt bool   `json:"interrupt"`
+					} `json:"response"`
+				} `json:"response"`
+			}
+			_ = json.Unmarshal([]byte(line), &reply)
+			if d := reply.Response.Response; d.Interrupt {
+				// The real CLI's interrupted denial: no init, an error
+				// result, and a nonzero exit.
+				emit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]any{
+					{"type": "tool_result", "tool_use_id": "toolu_q", "content": d.Message, "is_error": true}}}})
+				emit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]any{
+					{"type": "text", "text": "[Request interrupted by user]"}}}})
+				emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 2, "stop_reason": nil})
+				os.Exit(1)
+			}
 			emit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]any{
 				{"type": "tool_result", "tool_use_id": "toolu_q", "content": line}}}})
 			emit(map[string]any{"type": "system", "subtype": "init", "session_id": sessionID})
