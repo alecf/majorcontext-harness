@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2370,6 +2371,41 @@ func TestCompactRefusesCurrentlyDelegatedSession(t *testing.T) {
 	}
 	if len(prov.requests) != 0 {
 		t.Errorf("provider calls = %d, want 0 (Compact must refuse before ever calling the provider)", len(prov.requests))
+	}
+}
+
+func TestPromptCompactCommandRunsCompactInsteadOfModelTurn(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 10}),
+		compactTurn("three", provider.Usage{InputTokens: 10}),
+		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 5}),
+	}}
+	var events []Event
+	s := NewSession(Config{
+		Providers: provider.Registry{"test": prov},
+		Model:     message.ModelRef{Provider: "test", Model: "m1"},
+		OnEvent:   func(ev Event) { events = append(events, ev) },
+	})
+	runTurns(t, s, 3)
+
+	msg, err := s.Prompt(context.Background(), "/compact")
+	if err != nil {
+		t.Fatalf("Prompt(/compact): %v", err)
+	}
+	for _, m := range s.History() {
+		if m.Parts.Text() == "/compact" {
+			t.Fatalf("history contains a literal /compact user message: %+v", m)
+		}
+	}
+	if msg == nil || !strings.Contains(msg.Parts.Text(), "SUMMARY") {
+		t.Fatalf("Prompt(/compact) returned %+v, want the compaction summary", msg)
+	}
+	has := func(typ string) bool {
+		return slices.ContainsFunc(events, func(ev Event) bool { return ev.Type == typ })
+	}
+	if !has(EventCompactionStarted) || !has(EventHistoryCompacted) {
+		t.Fatalf("events = %+v, want EventCompactionStarted and EventHistoryCompacted", events)
 	}
 }
 

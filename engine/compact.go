@@ -207,6 +207,8 @@ type CompactResult struct {
 	LastID      string
 	Summary     *message.Message
 	SkipReason  string
+	// ClaudeCodeDelegated: the CLI's own command ran; every other field is zero.
+	ClaudeCodeDelegated bool
 }
 
 // SkipReason values for CompactResult.SkipReason, set only when
@@ -286,10 +288,32 @@ func isLoneExistingSummary(folded []message.Message) bool {
 	return m.Role == message.RoleUser && isCompactionSummaryID(m.ID)
 }
 
+const compactCommandText = "/compact"
+
+// isExplicitCompactCommand: an attachment means real intent to prompt the
+// model, not to run the command.
+func isExplicitCompactCommand(text string, blobs []*message.Blob) bool {
+	return len(blobs) == 0 && strings.TrimSpace(text) == compactCommandText
+}
+
+// RunCompactCommand is the one entry point both POST /session/{id}/compact
+// and an explicit "/compact" prompt call.
+func (s *Session) RunCompactCommand(ctx context.Context, opts CompactOptions) (CompactResult, error) {
+	if s.claudeCodeDelegated() {
+		if opts.KeepTurns != 0 || !opts.Model.IsZero() {
+			return CompactResult{}, errors.New("engine: keep_turns/model are not applicable to a session delegated to the Claude Code CLI, which owns its own context")
+		}
+		if _, err := s.dispatchClaudeCodeTurn(ctx, compactCommandText, message.OriginEngine, "", nil, nil); err != nil {
+			return CompactResult{}, err
+		}
+		return CompactResult{ClaudeCodeDelegated: true}, nil
+	}
+	return s.Compact(ctx, opts)
+}
+
 // Compact folds a contiguous prefix of whole turns into one synthetic
-// summary message, durably, in place. It is the single entry point both the
-// automatic trigger (maybeAutoCompact) and the explicit POST
-// /session/{id}/compact endpoint funnel through — see docs/design/
+// summary message, durably, in place. It is the native-lane mechanism both
+// maybeAutoCompact and RunCompactCommand funnel through — see docs/design/
 // context-compaction.md §1.
 //
 // It runs the slow, network-bound summarization call WITHOUT holding s.mu
@@ -322,15 +346,8 @@ func isLoneExistingSummary(folded []message.Message) bool {
 // (claudeCodeDelegated): that CLI manages its own context end to end, and
 // harness's journal for such a session is only ever a passive record of
 // what streamed back, never itself compacted — running the summarizer
-// against it would splice a journal nobody reads. This is the authoritative
-// guard; server/handlers.go's rejectClaudeCodeDelegatedCompact is a
-// cheaper, advisory pre-claim check for a nicer error response, and
-// maybeAutoCompact never reaches here for a delegated session at all
-// (PromptWithOrigin's delegated dispatch returns before maybeAutoCompact
-// runs) — but neither of those takes the run slot for the WHOLE window
-// between checking and calling Compact, so a native-to-claude-code
-// SetModel landing in that window still needs this check to be the one
-// that actually holds.
+// against it would splice a journal nobody reads. RunCompactCommand routes
+// a delegated session around this refusal.
 func (s *Session) Compact(ctx context.Context, opts CompactOptions) (CompactResult, error) {
 	if s.claudeCodeDelegated() {
 		return CompactResult{}, errors.New("engine: session is delegated to the Claude Code CLI; context is managed by the CLI itself, not by harness")
