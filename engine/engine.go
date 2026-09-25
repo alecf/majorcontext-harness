@@ -105,8 +105,12 @@ type Tool struct {
 // Event is one entry in the session's event stream. Event types follow ACP
 // naming where a choice is arbitrary (see docs/plugins-and-protocols.md).
 type Event struct {
-	Type       string              `json:"type"`
-	SessionID  string              `json:"session_id"`
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	// ID, on EventTextDelta/EventReasoningDelta/EventToolStart only, is the
+	// id the turn's own EventMessage will carry — see provider.Event.ID and
+	// claudeCodeUpstreamID. Empty until known.
+	ID         string              `json:"id,omitempty"`
 	Text       string              `json:"text,omitempty"`
 	Message    *message.Message    `json:"message,omitempty"`
 	ToolCall   *message.ToolCall   `json:"tool_call,omitempty"`
@@ -3386,6 +3390,12 @@ func (s *Session) streamTurn(ctx context.Context, attempt int) (*message.Message
 	// why.
 	var text strings.Builder
 	var toolCalls []*message.ToolCall
+	// streamID latches the first non-empty ev.ID this stream reports (see
+	// provider.Event.ID's doc comment: stable for the whole stream once
+	// known), so an interrupted turn's assemblePartial below can reuse the
+	// same id its deltas already streamed under instead of minting a second
+	// one the deltas never carried.
+	var streamID string
 	// firstDeltaAt is set once, on the first non-EventActivity event this
 	// stream yields (see provider.EventActivity's doc comment: it carries no
 	// content, so it must not count as "first byte"). If EventDone is
@@ -3410,7 +3420,7 @@ func (s *Session) streamTurn(ctx context.Context, attempt int) (*message.Message
 			}
 			return nil, "", provider.Usage{}, &interruptedTurnError{
 				err:     err,
-				partial: s.assemblePartial(text.String(), toolCalls),
+				partial: s.assemblePartial(streamID, text.String(), toolCalls),
 			}
 		}
 		watch.kick()
@@ -3421,9 +3431,15 @@ func (s *Session) streamTurn(ctx context.Context, attempt int) (*message.Message
 		switch ev.Type {
 		case provider.EventTextDelta:
 			text.WriteString(ev.Text)
-			s.emit(Event{Type: EventTextDelta, Text: ev.Text})
+			if streamID == "" {
+				streamID = ev.ID
+			}
+			s.emit(Event{Type: EventTextDelta, Text: ev.Text, ID: ev.ID})
 		case provider.EventReasoningDelta:
-			s.emit(Event{Type: EventReasoningDelta, Text: ev.Text})
+			if streamID == "" {
+				streamID = ev.ID
+			}
+			s.emit(Event{Type: EventReasoningDelta, Text: ev.Text, ID: ev.ID})
 		case provider.EventToolCall:
 			// A complete tool_use/tool_call block: the provider has
 			// finished emitting its arguments (see
@@ -3497,10 +3513,19 @@ func (s *Session) streamTurn(ctx context.Context, attempt int) (*message.Message
 // more tool calls but before EventDone. It mirrors the shape a provider
 // adapter's own assemble (e.g. provider/anthropic/anthropic.go's
 // stream.assemble) would produce for the same partial content: any
-// accumulated text first, then the tool calls in emission order.
-func (s *Session) assemblePartial(text string, toolCalls []*message.ToolCall) *message.Message {
+// accumulated text first, then the tool calls in emission order. id is
+// streamTurn's latched streamID, used verbatim so the salvaged message
+// reuses the id its own deltas already streamed under — the same rule
+// every native adapter's own assemble (e.g. provider/anthropic/
+// anthropic.go's stream.assemble) applies to Message.ID, never
+// ResolveMessageID's reserved-prefix rewrite. Empty only mints, matching
+// streamTurn never latching an id when the provider sent none.
+func (s *Session) assemblePartial(id, text string, toolCalls []*message.ToolCall) *message.Message {
+	if id == "" {
+		id = newID("msg")
+	}
 	msg := &message.Message{
-		ID:        newID("msg"),
+		ID:        id,
 		Role:      message.RoleAssistant,
 		Model:     s.Model(),
 		CreatedAt: time.Now().UTC(),
