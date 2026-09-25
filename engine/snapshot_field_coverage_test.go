@@ -67,6 +67,7 @@ var snapshottedSessionFields = map[string]bool{
 	"claudeCodeHistoryWatermark": true,
 	"claudeCodeSessionCostUSD":   true,
 	"haveClaudeCodeCost":         true,
+	"claudeCodeWindowTokens":     true,
 }
 
 // snapshotExcludedSessionFields is every other Session field, each mapped
