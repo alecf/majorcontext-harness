@@ -3096,3 +3096,30 @@ func TestSnapshotDiscardsPreWindowVersion(t *testing.T) {
 		t.Errorf("ContextWindowTokens() = %d, want 1000000 re-derived from the journal", got)
 	}
 }
+
+// TestIndexRefoldsPreWindowVersion: a sidecar written before
+// sessionIndexVersion covered WindowTokens can still match the journal's size
+// and mtime, so accepting it serves a zero window from a stale fold.
+func TestIndexRefoldsPreWindowVersion(t *testing.T) {
+	s, _ := claudeCodeTestSession(t, "per_call_usage")
+	if _, err := s.Prompt(context.Background(), "run two commands"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	ix, err := ReadSessionIndex(s.cfg.SessionDir, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Version = 2
+	ix.WindowTokens = 0
+	if err := os.WriteFile(filepath.Join(s.cfg.SessionDir, s.ID+sessionIndexSuffix), mustMarshalIndex(t, ix), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadSessionIndex(s.cfg.SessionDir, s.ID)
+	if err != nil {
+		t.Fatalf("ReadSessionIndex: %v", err)
+	}
+	if got.WindowTokens != 1_000_000 {
+		t.Errorf("WindowTokens = %d, want 1000000 refolded from the journal", got.WindowTokens)
+	}
+}
