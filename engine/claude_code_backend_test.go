@@ -3015,3 +3015,111 @@ func TestClaudeCodeForwardsCompactBoundaryAsEvent(t *testing.T) {
 		t.Errorf("ClaudeCodeCompactPreTokens = %d, want 123456", found.ClaudeCodeCompactPreTokens)
 	}
 }
+
+// TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow: a delegated turn
+// with three API calls must report the LAST call's prompt as LastUsage (not
+// the result event's sum across all three) and the window the CLI reports in
+// modelUsage, never a table figure: live, after a full or snapshot reload, and
+// in the index.
+func TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow(t *testing.T) {
+	s, _ := claudeCodeTestSession(t, "per_call_usage")
+	if _, err := s.Prompt(context.Background(), "run two commands"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	reloaded, err := LoadSession(Config{SessionDir: s.cfg.SessionDir, ClaudeCode: s.cfg.ClaudeCode}, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	s.cfg.SnapshotEveryRecords = idleOnly
+	s.snapshotOnIdle()
+	s.waitSnapshots()
+	fromSnapshot, err := LoadSession(Config{SessionDir: s.cfg.SessionDir, ClaudeCode: s.cfg.ClaudeCode}, s.ID)
+	if err != nil || fromSnapshot.replayedRecords >= fromSnapshot.recordsWritten {
+		t.Fatalf("snapshot LoadSession: err %v, replayed %d of %d records", err, fromSnapshot.replayedRecords, fromSnapshot.recordsWritten)
+	}
+	wantLast := provider.Usage{InputTokens: 2, OutputTokens: 39, CacheReadTokens: 15883, CacheWriteTokens: 104}
+	wantTotal := provider.Usage{InputTokens: 6, OutputTokens: 187, CacheReadTokens: 41896, CacheWriteTokens: 5753}
+	for name, sess := range map[string]*Session{"live": s, "reloaded": reloaded, "snapshot": fromSnapshot} {
+		if last, ok := sess.LastUsage(); !ok || last != wantLast {
+			t.Errorf("%s LastUsage() = %+v, %v; want %+v", name, last, ok, wantLast)
+		}
+		if got := sess.Usage(); got != wantTotal {
+			t.Errorf("%s Usage() = %+v, want %+v", name, got, wantTotal)
+		}
+		if got := sess.ContextWindowTokens(); got != 1_000_000 {
+			t.Errorf("%s ContextWindowTokens() = %d, want 1000000", name, got)
+		}
+	}
+	ix, err := ReadSessionIndex(s.cfg.SessionDir, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ix.LastPromptTokens != 15989 || ix.WindowTokens != 1_000_000 {
+		t.Errorf("index LastPromptTokens/WindowTokens = %d/%d, want 15989/1000000", ix.LastPromptTokens, ix.WindowTokens)
+	}
+
+	s.SetModel(message.ModelRef{Provider: ClaudeCodeProviderFamily, Model: "haiku"})
+	switched, err := LoadSession(Config{SessionDir: s.cfg.SessionDir, ClaudeCode: s.cfg.ClaudeCode}, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, cold := s.ContextWindowTokens(), switched.ContextWindowTokens(); live != 0 || cold != 0 {
+		t.Errorf("after a model switch, live/reloaded ContextWindowTokens() = %d/%d, want 0 (the old model's CLI-reported window must not carry over)", live, cold)
+	}
+}
+
+// TestSnapshotDiscardsPreWindowVersion: a snapshot written before
+// sessionSnapshotVersion covered ClaudeCodeWindowTokens carries the field as
+// zero, so trusting it loses a window the CLI already reported. Recovery must
+// discard it and re-derive the window from the recClaudeCodeUsage fold.
+func TestSnapshotDiscardsPreWindowVersion(t *testing.T) {
+	s, _ := claudeCodeTestSession(t, "per_call_usage")
+	if _, err := s.Prompt(context.Background(), "run two commands"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	s.cfg.SnapshotEveryRecords = idleOnly
+	s.snapshotOnIdle()
+	s.waitSnapshots()
+	rewriteSnapshot(t, s.cfg.SessionDir, s.ID, func(snap *sessionSnapshot) {
+		snap.Version = 2
+		snap.ClaudeCodeWindowTokens = 0
+	})
+
+	loaded, err := LoadSession(Config{SessionDir: s.cfg.SessionDir, ClaudeCode: s.cfg.ClaudeCode}, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.replayedRecords != loaded.recordsWritten {
+		t.Errorf("replayed %d of %d records, want a FULL replay — a pre-window snapshot must be discarded", loaded.replayedRecords, loaded.recordsWritten)
+	}
+	if got := loaded.ContextWindowTokens(); got != 1_000_000 {
+		t.Errorf("ContextWindowTokens() = %d, want 1000000 re-derived from the journal", got)
+	}
+}
+
+// TestIndexRefoldsPreWindowVersion: a sidecar written before
+// sessionIndexVersion covered WindowTokens can still match the journal's size
+// and mtime, so accepting it serves a zero window from a stale fold.
+func TestIndexRefoldsPreWindowVersion(t *testing.T) {
+	s, _ := claudeCodeTestSession(t, "per_call_usage")
+	if _, err := s.Prompt(context.Background(), "run two commands"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	ix, err := ReadSessionIndex(s.cfg.SessionDir, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix.Version = 2
+	ix.WindowTokens = 0
+	if err := os.WriteFile(filepath.Join(s.cfg.SessionDir, s.ID+sessionIndexSuffix), mustMarshalIndex(t, ix), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadSessionIndex(s.cfg.SessionDir, s.ID)
+	if err != nil {
+		t.Fatalf("ReadSessionIndex: %v", err)
+	}
+	if got.WindowTokens != 1_000_000 {
+		t.Errorf("WindowTokens = %d, want 1000000 refolded from the journal", got.WindowTokens)
+	}
+}

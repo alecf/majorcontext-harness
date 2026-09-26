@@ -218,10 +218,11 @@ func ContextWindow(ref message.ModelRef) (tokens int, ok bool) {
 			tokens, ok = bedrockAnthropicContextWindows[stripBedrockVersionSuffix(suffix)]
 		}
 	case claudeCodeProvider:
-		// The CLI resolves a bare alias itself and never reports what it
-		// chose, so no window here can be right. Report none rather than a
-		// plausible figure: a wrong denominator renders a session five times
-		// fuller than it is.
+		// The CLI resolves a bare alias itself, so no window here can be
+		// right. Report none rather than a plausible figure: a wrong
+		// denominator renders a session five times fuller than it is. A
+		// turn's "result" envelope carries the window the CLI chose, and
+		// applyClaudeCodeUsage reports that instead.
 		tokens, ok = 0, true
 	}
 	return tokens, ok

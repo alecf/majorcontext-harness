@@ -100,6 +100,12 @@ back, so no table can hold the answer. It previously reported a 200,000
 stand-in, which rendered a session on a 1,000,000-token model as five times
 fuller than it was. Treat the 0 as unknown rather than as a size.
 
+The CLI does report the window it chose, in a "result" event's `modelUsage`
+entry keyed by the model its "system"/"init" event names.
+`applyClaudeCodeUsage` records that figure, so a delegated session reports a
+real window from its first completed turn onward. A model switch clears it,
+because the next model resolves its own.
+
 The registry covers `anthropic`, `openai`, `codex`, `amazon-bedrock`,
 `claude-code`, and `bifrost` refs. The `bifrost` case
 (`modelmeta.bifrostFireworksContextWindows`,

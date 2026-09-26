@@ -476,7 +476,8 @@ func TestSessionIndexLastPromptTokensFoldsDelegatedUsage(t *testing.T) {
 	if err := s.Persist(); err != nil {
 		t.Fatal(err)
 	}
-	s.applyClaudeCodeUsage(provider.Usage{InputTokens: 5, CacheReadTokens: 200, CacheWriteTokens: 10}, 0.05)
+	delegated := provider.Usage{InputTokens: 5, CacheReadTokens: 200, CacheWriteTokens: 10}
+	s.applyClaudeCodeUsage(delegated, delegated, 0, 0.05)
 
 	last, ok := s.LastUsage()
 	if !ok {
@@ -490,6 +491,12 @@ func TestSessionIndexLastPromptTokensFoldsDelegatedUsage(t *testing.T) {
 	}
 	if ix.LastPromptTokens != wantUsed {
 		t.Errorf("cold LastPromptTokens = %d, want %d (the live sum a resident read reports)", ix.LastPromptTokens, wantUsed)
+	}
+	if ix.LastInputTokens != last.InputTokens {
+		t.Errorf("cold LastInputTokens = %d, want %d (one last_input_tokens field, served live or cold)", ix.LastInputTokens, last.InputTokens)
+	}
+	if ix.Usage != s.Usage() {
+		t.Errorf("cold Usage = %+v, want %+v (the index mirrors Session.Usage)", ix.Usage, s.Usage())
 	}
 }
 
