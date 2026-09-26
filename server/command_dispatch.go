@@ -14,44 +14,15 @@ import (
 	"github.com/majorcontext/harness/message"
 )
 
-// serveOpHandlers dispatches an Op in process, bypassing auth: the prompt
-// route that resolved this command already authenticated the caller.
-var serveOpHandlers = map[command.Op]func(*Server, http.ResponseWriter, *http.Request){
-	command.OpCompact:        (*Server).handleCompact,
-	command.OpSetModel:       (*Server).handleSetModel,
-	command.OpSetThinking:    (*Server).handleSetThinking,
-	command.OpSetServiceTier: (*Server).handleSetServiceTier,
-	command.OpAbort:          (*Server).handleAbort,
-	command.OpSetGoal:        (*Server).handleGoal,
-	command.OpClearGoal:      (*Server).handleGoalDelete,
-	command.OpQueueList:      (*Server).handleQueueGet,
-	command.OpStatus:         (*Server).handleGet,
-	command.OpProcessList:    (*Server).handleProcessList,
-}
-
 func commandRouteBody(op command.Op, args map[string]any) []byte {
-	switch op {
-	case command.OpCompact:
-		if n, ok := args["keep_turns"].(int); ok {
-			b, _ := json.Marshal(map[string]int{"keep_turns": n})
-			return b
+	if len(args) == 0 {
+		if op == command.OpCompact {
+			return []byte("{}")
 		}
-		return []byte("{}")
-	case command.OpSetModel:
-		b, _ := json.Marshal(map[string]string{"model": args["model"].(string)})
-		return b
-	case command.OpSetThinking:
-		b, _ := json.Marshal(map[string]string{"effort": args["effort"].(string)})
-		return b
-	case command.OpSetServiceTier:
-		b, _ := json.Marshal(map[string]string{"service_tier": args["service_tier"].(string)})
-		return b
-	case command.OpSetGoal:
-		b, _ := json.Marshal(map[string]string{"condition": args["condition"].(string)})
-		return b
-	default:
 		return nil
 	}
+	body, _ := json.Marshal(args)
+	return body
 }
 
 // commandResponseWriter caps its buffer at commandResultCap+1 bytes.
@@ -132,7 +103,7 @@ func (s *Server) runCommand(id string, sess *engine.Session, releaseSess func(),
 	}
 
 	cw := newCommandResponseWriter(res.Spec.Op)
-	serveOpHandlers[res.Spec.Op](s, cw, req)
+	rt.handler(s, cw, req)
 
 	managedChild := sess.TaskParentID() != ""
 	rec.Status, rec.Text, rec.Result, rec.ResultTruncated = commandOutcome(res.Spec.Op, typed, cw.code, cw.body.Bytes(), s.isDraining(), res.Spec.AvailableDuringTask, managedChild)
@@ -197,8 +168,19 @@ type compactDelegatedResultJSON struct {
 	ClaudeCodeDelegated bool `json:"claude_code_delegated"`
 }
 
+type compactCommandResponseJSON struct {
+	TurnsFolded         int    `json:"turns_folded"`
+	FirstID             string `json:"first_id"`
+	LastID              string `json:"last_id"`
+	SkipReason          string `json:"skip_reason"`
+	ClaudeCodeDelegated bool   `json:"claude_code_delegated"`
+	Summary             *struct {
+		ID string `json:"id"`
+	} `json:"summary"`
+}
+
 func compactCommandOutcome(typed string, body []byte) (message.CommandStatus, string, json.RawMessage, bool) {
-	var cr compactResponseJSON
+	var cr compactCommandResponseJSON
 	_ = json.Unmarshal(body, &cr)
 	if cr.SkipReason != "" {
 		return message.CommandFailed, "/compact did nothing: " + engine.CompactSkipMessage(cr.SkipReason), nil, false
