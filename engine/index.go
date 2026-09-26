@@ -335,6 +335,7 @@ func (f *indexFold) applyIndexRecord(rec indexRecord, isLast bool) error {
 		}
 	case recClaudeCodeUsage:
 		if last := claudeCodeLastUsage(rec.Usage, rec.ClaudeCodeLastUsage); last != nil {
+			f.ix.LastInputTokens = last.InputTokens
 			f.ix.LastPromptTokens = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
 		}
 		if rec.ClaudeCodeWindowTokens > 0 {

@@ -492,6 +492,9 @@ func TestSessionIndexLastPromptTokensFoldsDelegatedUsage(t *testing.T) {
 	if ix.LastPromptTokens != wantUsed {
 		t.Errorf("cold LastPromptTokens = %d, want %d (the live sum a resident read reports)", ix.LastPromptTokens, wantUsed)
 	}
+	if ix.LastInputTokens != last.InputTokens {
+		t.Errorf("cold LastInputTokens = %d, want %d (one last_input_tokens field, served live or cold)", ix.LastInputTokens, last.InputTokens)
+	}
 }
 
 // TestReadSessionIndexRefoldsStaleVersionForNewField: a version-1 sidecar must refold.

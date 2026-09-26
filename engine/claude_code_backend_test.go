@@ -3019,7 +3019,7 @@ func TestClaudeCodeForwardsCompactBoundaryAsEvent(t *testing.T) {
 // TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow: a delegated turn
 // with three API calls must report the LAST call's prompt as LastUsage (not
 // the result event's sum across all three) and the window the CLI reports in
-// modelUsage (not the stand-in): live, after a full or snapshot reload, and
+// modelUsage, never a table figure: live, after a full or snapshot reload, and
 // in the index.
 func TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow(t *testing.T) {
 	s, _ := claudeCodeTestSession(t, "per_call_usage")
@@ -3063,7 +3063,7 @@ func TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if live, cold := s.ContextWindowTokens(), switched.ContextWindowTokens(); live != 200_000 || cold != 200_000 {
-		t.Errorf("after a model switch, live/reloaded ContextWindowTokens() = %d/%d, want the stand-in 200000 (the old model's window must not carry over)", live, cold)
+	if live, cold := s.ContextWindowTokens(), switched.ContextWindowTokens(); live != 0 || cold != 0 {
+		t.Errorf("after a model switch, live/reloaded ContextWindowTokens() = %d/%d, want 0 (the old model's CLI-reported window must not carry over)", live, cold)
 	}
 }

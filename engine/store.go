@@ -2368,6 +2368,7 @@ func readSessionInfo(path string) (SessionInfo, error) {
 			}
 		case recClaudeCodeUsage:
 			if last := claudeCodeLastUsage(rec.Usage, rec.ClaudeCodeLastUsage); last != nil {
+				info.LastInputTokens = last.InputTokens
 				info.LastPromptTokens = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
 			}
 			if rec.ClaudeCodeWindowTokens > 0 {
