@@ -602,6 +602,13 @@ The same turns add `EnterPlanMode` and `ExitPlanMode` to
 `--disallowedTools`. Both tools also need a human, and plan mode is a
 settled non-goal.
 
+`Config.ClaudeCode.ExtraArgs` follows every engine-owned flag, and the CLI
+keeps the last value of a repeated option. Harness therefore rejects
+`--settings`, `--permission-prompt-tool`, and `--disallowedTools` in
+`ExtraArgs`, in both the separate-value and the `=value` form, whenever a
+turn offers `AskUserQuestion`. Each would defeat the defer hook or the
+plan-mode ban silently.
+
 ### Park
 
 The hook returns the `defer` permission decision for `AskUserQuestion`. The
@@ -636,6 +643,12 @@ prompt. The hook passes that one call id, so the CLI asks the host through a
 input plus `answers`. The CLI then delivers the tool result against the same
 call id, and the model continues.
 
+Harness journals the tool result before the record that clears the pending
+question, so a process lost between the two writes reloads with the answer
+in place. `LoadSession` reads a pending call that already holds a result as
+answered: the CLI never runs a finished call again, so no dismissal could
+clear it.
+
 The answer turn does not inject queued prompts. The CLI queues stdin text
 behind its own continuation and answers it in a second `result`. Harness
 stops reading at the first `result`, so that reply would be lost. A queued
@@ -649,7 +662,17 @@ directive. Harness resumes the CLI with no stdin text and answers the
 parked call with `deny` and `interrupt: true`. The CLI records an error tool
 result and stops without a model call. Harness then runs the turn
 normally. The transcript shows the question, its dismissal result, and then
-the new prompt.
+the new prompt. `POST /session/{id}/compact` dismisses the question the same
+way before it sends `/compact`.
+
+The interrupted child exits nonzero after its own terminal result. Harness
+expects that one exit and nothing else: a dismissal child that dies before
+that result fails the turn.
+
+Only the turn that parks a question ends with outcome `awaiting_input`. A
+session that switches to a native model keeps the pending call, because a
+later delegated turn must still dismiss it, so a native turn there ends
+`completed`. The answer route returns 409 while the model is native.
 
 ### Permission requests
 

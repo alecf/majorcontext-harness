@@ -2064,6 +2064,12 @@ func LoadSession(cfg Config, id string) (*Session, error) {
 	// bypassed that path entirely (an older binary, a plugin, or an
 	// external writer). The repair is re-derived deterministically on every
 	// load; the log itself stays append-only and unmodified.
+	// A crash between the answer's result and the record that clears the
+	// question leaves a parked call that already holds its result. The CLI
+	// never re-runs a finished call, so no dismissal could clear it.
+	if s.claudeCodePendingQuestion != "" && claudeCodeCallHasResult(s.history, s.claudeCodePendingQuestion) {
+		s.claudeCodePendingQuestion = ""
+	}
 	s.history = message.ResolveOrphanToolCallsExcept(s.history, s.claudeCodePendingQuestion)
 	// newSession already resolved s.cfg.ContextWindowTokens/contextWindowSource
 	// once, against cfg.Model — but a recModel record above may have moved

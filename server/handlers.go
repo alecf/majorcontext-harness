@@ -2102,7 +2102,7 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no such session")
 		return
 	}
-	if callID == "" || st.sess.PendingQuestion() != callID {
+	if callID == "" || st.sess.PendingQuestion() != callID || !st.sess.ClaudeCodeDelegated() {
 		s.releasePromptClaim(st)
 		writeErr(w, http.StatusConflict, engine.ErrNoPendingQuestion.Error())
 		return
@@ -2692,11 +2692,15 @@ func (s *Server) runTurn(ctx context.Context, id string, st *sessionState, turn 
 	// hits, closing the "task tool broken after restart" gap a live
 	// review caught.
 	s.sessMgr.ReportTurnStart(st.sess)
+	// A question parked by an EARLIER turn stays pending across a switch to
+	// a native model. Only the turn that parked one awaits input.
+	parked := st.sess.PendingQuestion()
 	msg, err := turn(ctx)
 	s.syncMessages(id) // catch any message not yet journaled
+	question := st.sess.PendingQuestion()
 	switch {
-	case err == nil && st.sess.PendingQuestion() != "":
-		s.recordTurnEndQuestion(id, st.sess, st.sess.PendingQuestion())
+	case err == nil && question != "" && question != parked:
+		s.recordTurnEndQuestion(id, st.sess, question)
 	case err == nil:
 		s.recordTurnEnd(id, st.sess, "completed", nil)
 	case errors.Is(err, context.Canceled):

@@ -307,6 +307,10 @@ func main() {
 				// result, and a nonzero exit.
 				emit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]any{
 					{"type": "tool_result", "tool_use_id": "toolu_q", "content": d.Message, "is_error": true}}}})
+				if os.Getenv("FAKE_CLAUDE_DISMISS_DIES") != "" {
+					// A dismissal child that dies before its terminal result.
+					os.Exit(1)
+				}
 				emit(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": []map[string]any{
 					{"type": "text", "text": "[Request interrupted by user]"}}}})
 				emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 2, "stop_reason": nil})

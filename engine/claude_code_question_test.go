@@ -244,3 +244,119 @@ func decodeControlResponse(t *testing.T, line string) controlResponseForTest {
 	}
 	return c
 }
+
+// TestClaudeCodeQuestionExtraArgsCannotOverrideParkingFlags proves a config
+// cannot quietly defeat the defer hook or the plan-mode ban: engine flags
+// precede ExtraArgs and the CLI keeps a repeated option's LAST value, so an
+// entry here stops a session parking, or restores EnterPlanMode.
+func TestClaudeCodeQuestionExtraArgsCannotOverrideParkingFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--settings", "{}"},
+		{"--settings={}"},
+		{"--permission-prompt-tool", "none"},
+		{"--permission-prompt-tool=none"},
+		{"--disallowedTools", "Agent"},
+		{"--disallowedTools=Agent"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			s, _ := claudeCodeQuestionSession(t)
+			s.cfg.ClaudeCode.ExtraArgs = args
+			_, err := s.Prompt(context.Background(), "hi")
+			if err == nil || !strings.Contains(err.Error(), args[0]) {
+				t.Fatalf("Prompt error = %v, want a %s conflict", err, args[0])
+			}
+		})
+	}
+}
+
+// TestClaudeCodeCompactDismissesParkedQuestion pins the lost-command
+// defect: RunCompactCommand reaches the delegated backend directly, so the
+// resumed CLI ran its deferred call first and read "/compact" as that call's
+// control response. The command must follow a dismissal.
+func TestClaudeCodeCompactDismissesParkedQuestion(t *testing.T) {
+	s, stdinLog := claudeCodeQuestionSession(t)
+	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if _, err := s.RunCompactCommand(context.Background(), CompactOptions{}); err != nil {
+		t.Fatalf("RunCompactCommand: %v", err)
+	}
+	lines := readStdinLines(t, stdinLog)
+	if len(lines) != 3 || !strings.Contains(lines[2], compactCommandText) {
+		t.Fatalf("stdin lines = %q, want the prompt, the dismissal, then %s", lines, compactCommandText)
+	}
+	if got := decodeControlResponse(t, lines[1]); got.Response.Response.Behavior != "deny" || !got.Response.Response.Interrupt {
+		t.Errorf("dismissal = %s, want deny with interrupt", lines[1])
+	}
+}
+
+// TestClaudeCodeAnswerSurvivesACrashBetweenItsJournalWrites pins the crash
+// window: the clearing claude_code.question record was written BEFORE the
+// answer's own tool result, so a process lost between the two reloaded with
+// an unanswered call, no exemption, and a synthetic orphan result. The
+// result must be durable first, and a reload that lost only the clearing
+// record must read the call as answered: the CLI never re-runs a finished
+// call, so no later dismissal could clear it.
+func TestClaudeCodeAnswerSurvivesACrashBetweenItsJournalWrites(t *testing.T) {
+	s, _ := claudeCodeQuestionSession(t)
+	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if _, err := s.AnswerQuestion(context.Background(), "toolu_q", map[string]string{"Which database?": "SQLite"}); err != nil {
+		t.Fatalf("AnswerQuestion: %v", err)
+	}
+	result, cleared := -1, -1
+	var keep []string
+	for i, line := range readSessionLog(t, s) {
+		switch {
+		case strings.Contains(line, `"type":"claude_code.question"`) && !strings.Contains(line, "toolu_q"):
+			cleared = i
+			continue
+		case strings.Contains(line, `"tool_result","call_id":"toolu_q"`):
+			result = i
+		}
+		keep = append(keep, line)
+	}
+	if result < 0 || cleared < 0 || result > cleared {
+		t.Fatalf("journal: toolu_q result at record %d, question cleared at record %d; want the result first", result, cleared)
+	}
+	rewriteSessionLog(t, s, keep)
+	r, err := LoadSession(s.cfg, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := r.PendingQuestion(); got != "" {
+		t.Errorf("PendingQuestion() for a call that already holds its result = %q, want empty", got)
+	}
+}
+
+func readSessionLog(t *testing.T, s *Session) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(s.cfg.SessionDir, s.ID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+}
+
+func rewriteSessionLog(t *testing.T, s *Session, lines []string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(s.cfg.SessionDir, s.ID+".jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestClaudeCodeDismissalChildDeathSurfaces pins the blanket swallow:
+// dismissClaudeCodeQuestion dropped every error the dismissal child returned
+// as long as the parked call happened to get a result. A child that died
+// before its terminal result then read as a clean dismissal.
+func TestClaudeCodeDismissalChildDeathSurfaces(t *testing.T) {
+	s, _ := claudeCodeQuestionSession(t)
+	if _, err := s.Prompt(context.Background(), "pick a db"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	t.Setenv("FAKE_CLAUDE_DISMISS_DIES", "1")
+	if _, err := s.Prompt(context.Background(), "use the default"); err == nil {
+		t.Fatal("second Prompt succeeded; want the dismissal child's own failure")
+	}
+}

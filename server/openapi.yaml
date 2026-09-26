@@ -3682,7 +3682,8 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: >
-            The session is busy, or call_id is not its parked question.
+            The session is busy, call_id is not its parked question, or the
+            session's model no longer routes to the Claude Code CLI.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

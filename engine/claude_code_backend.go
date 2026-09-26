@@ -182,16 +182,15 @@ func (s *Session) dismissClaudeCodeQuestion(ctx context.Context) error {
 		return nil
 	}
 	caughtUp := s.claudeCodeHistoryWatermarkCount() == len(s.History())
-	_, err := s.runClaudeCodeChild(ctx, "", nil, &claudeCodeResolution{
+	if _, err := s.runClaudeCodeChild(ctx, "", nil, &claudeCodeResolution{
 		callID:   callID,
 		decision: map[string]any{"behavior": "deny", "message": "The user dismissed this question without answering.", "interrupt": true},
 		dismiss:  true,
-	})
-	if s.PendingQuestion() != "" {
-		if err == nil {
-			err = fmt.Errorf("engine: claude-code: question %s was not dismissed", callID)
-		}
+	}); err != nil {
 		return err
+	}
+	if s.PendingQuestion() != "" {
+		return fmt.Errorf("engine: claude-code: question %s was not dismissed", callID)
 	}
 	if caughtUp {
 		// The interrupted child emits no init, so its own watermark update
@@ -498,6 +497,15 @@ func (s *Session) runClaudeCodeChild(ctx context.Context, text string, blobs []*
 	defer cleanupMCPConfig()
 
 	questions := res != nil || s.claudeCodeAsksQuestions()
+	if questions {
+		// ExtraArgs follow every engine flag and the CLI keeps the LAST value
+		// of a repeated option, so an entry here would defeat the hook or ban.
+		for _, arg := range cfg.ExtraArgs {
+			if claudeCodeQuestionOwnedArg(arg) {
+				return nil, fmt.Errorf("engine: claude-code: Config.ClaudeCode.ExtraArgs contains %q, which is engine-owned while Config.ClaudeCode.AskUserQuestion is set; it would override the AskUserQuestion defer hook or the plan-mode ban", arg)
+			}
+		}
+	}
 	disallowedTools := "Agent,Workflow,ScheduleWakeup,CronCreate,CronDelete,CronList"
 	if questions {
 		// Both need a human the same way AskUserQuestion does, and plan mode
@@ -745,8 +753,8 @@ func (s *Session) runClaudeCodeChild(ctx context.Context, text string, blobs []*
 		}
 		for {
 			select {
-			case line := <-control:
-				if _, err := stdin.Write(append(line, '\n')); err != nil {
+			case frame := <-control:
+				if _, err := stdin.Write(frame); err != nil {
 					return
 				}
 			case <-wake:
@@ -852,12 +860,16 @@ func (s *Session) runClaudeCodeChild(ctx context.Context, text string, blobs []*
 	}()
 
 	respond := func(line []byte) {
+		// The pump can still be inside stdin.Write when this returns, so it
+		// gets a frame of its own. The caller keeps every buffer it passes.
+		frame := make([]byte, 0, len(line)+1)
+		frame = append(append(frame, line...), '\n')
 		select {
-		case control <- line:
+		case control <- frame:
 		case <-pumpDone:
 		}
 	}
-	finalMsg, started, turnErr, zeroMessageOK := s.consumeClaudeCodeStream(stdout, model, res, respond)
+	finalMsg, started, turnErr, zeroMessageOK, dismissed := s.consumeClaudeCodeStream(stdout, model, res, respond)
 	// No more input is coming for this child (mirrors the single-string
 	// SDK path's own endInput()-on-first-"result" call — see the pump
 	// goroutine's own doc comment above): signal it to stop, THEN close
@@ -978,6 +990,7 @@ func (s *Session) runClaudeCodeChild(ctx context.Context, text string, blobs []*
 		started:       started,
 		finalMsg:      finalMsg,
 		zeroMessageOK: zeroMessageOK,
+		dismissed:     dismissed,
 		binary:        binary,
 		stderr:        stderr.String(),
 	})
@@ -996,6 +1009,9 @@ type claudeCodeTurnOutcome struct {
 	zeroMessageOK bool
 	binary        string
 	stderr        string
+	// dismissed marks the one expected nonzero exit: the interrupted
+	// dismissal child reached its terminal result.
+	dismissed bool
 }
 
 // claudeCodeTurnResult turns one claudeCodeTurnOutcome into runClaudeCodeTurn's
@@ -1015,6 +1031,11 @@ func claudeCodeTurnResult(o claudeCodeTurnOutcome) (*message.Message, error) {
 	}
 	if o.turnErr != nil {
 		return nil, o.turnErr
+	}
+	if o.dismissed {
+		// Interrupted by design: it exits nonzero after its terminal result
+		// and produces no assistant message. Only THAT exit is expected.
+		return nil, nil
 	}
 	if o.waitErr != nil {
 		msg := fmt.Sprintf("engine: claude-code: %q exited with error: %v", o.binary, o.waitErr)
@@ -1182,7 +1203,7 @@ func claudeCodeHistoryDirectiveArgs(history []message.Message, watermark int) []
 // child's process group: that would kill the very background session
 // --bg exists to keep alive. See runClaudeCodeTurn's own comment on why
 // its subsequent cmd.Wait() does not reintroduce this wait.
-func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, res *claudeCodeResolution, respond func([]byte)) (finalMsg *message.Message, started bool, turnErr error, zeroMessageOK bool) {
+func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, res *claudeCodeResolution, respond func([]byte)) (finalMsg *message.Message, started bool, turnErr error, zeroMessageOK bool, dismissed bool) {
 	var compactBoundarySeen, compactUnsettled bool
 	// compactStartedAt is the wall-clock instant this stream observed the
 	// CLI's own "compacting" status, reset to zero once consumed by the
@@ -1298,6 +1319,21 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 		}
 	}
 
+	// clearAnsweredQuestion runs only AFTER m is durable: a crash between
+	// those two journal records must not strand the parked call.
+	clearAnsweredQuestion := func(m message.Message) {
+		parked := s.PendingQuestion()
+		if parked == "" {
+			return
+		}
+		for _, p := range m.Parts {
+			if tr, ok := p.(*message.ToolResult); ok && tr.CallID == parked {
+				s.recordClaudeCodeQuestion("")
+				return
+			}
+		}
+	}
+
 	// flushPendingAssistant journals the assembled message and then every
 	// tool_result held behind it, in arrival order — the shape the wire
 	// would have had if the CLI had sent the whole response at once.
@@ -1315,6 +1351,7 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 		for i := range deferredToolResults {
 			result := deferredToolResults[i]
 			s.append(result)
+			clearAnsweredQuestion(result)
 			s.emit(Event{Type: EventMessage, Message: &result})
 		}
 		deferredToolResults = nil
@@ -1585,9 +1622,6 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 			// tool card it already has open.
 			for _, p := range msg.Parts {
 				if tr, ok := p.(*message.ToolResult); ok {
-					if tr.CallID == s.PendingQuestion() {
-						s.recordClaudeCodeQuestion("")
-					}
 					s.emit(Event{
 						Type:     EventToolEnd,
 						ToolCall: &message.ToolCall{CallID: tr.CallID},
@@ -1622,6 +1656,7 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 				continue
 			}
 			s.append(*msg)
+			clearAnsweredQuestion(*msg)
 			s.emit(Event{Type: EventMessage, Message: msg})
 		case "result":
 			zeroTurnEmpty := !env.IsError && env.NumTurns != nil && *env.NumTurns == 0 && env.Result == "" &&
@@ -1641,9 +1676,11 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 				s.recordClaudeCodeQuestion(askCallID)
 			}
 			if res != nil && res.dismiss {
-				// The interrupted child made no provider call to account for.
+				// The interrupted child made no provider call to account for,
+				// and reaching this result is what makes its exit expected.
+				dismissed = true
 				settleCompaction()
-				return finalMsg, started, turnErr, zeroMessageOK
+				return finalMsg, started, turnErr, zeroMessageOK, dismissed
 			}
 			usage := mapClaudeCodeUsage(env.Usage)
 			last := usage
@@ -1703,7 +1740,7 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 			// it both times, never after. Nothing observed contradicts the
 			// result as the terminal event.
 			settleCompaction()
-			return finalMsg, started, turnErr, zeroMessageOK
+			return finalMsg, started, turnErr, zeroMessageOK, dismissed
 		case "control_request":
 			if env.Request == nil || env.Request.Subtype != "can_use_tool" || respond == nil {
 				continue
@@ -1734,7 +1771,7 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef, r
 	flushPendingAssistant()
 	flushPendingReasoning()
 	settleCompaction()
-	return finalMsg, started, turnErr, false
+	return finalMsg, started, turnErr, false, false
 }
 
 // reasoningOnlyParts reports whether parts is non-empty and every part is
@@ -2244,6 +2281,28 @@ func claudeCodeAppendPromptArg(arg string) bool {
 func claudeCodeThinkingDisplayArg(arg string) bool {
 	return arg == "--thinking-display" ||
 		strings.HasPrefix(arg, "--thinking-display=")
+}
+
+func claudeCodeCallHasResult(history []message.Message, callID string) bool {
+	for i := range history {
+		for _, p := range history[i].Parts {
+			if tr, ok := p.(*message.ToolResult); ok && tr.CallID == callID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claudeCodeQuestionOwnedArg reports whether an ExtraArgs entry sets one of
+// the options a question-parking argv owns, in either wire form.
+func claudeCodeQuestionOwnedArg(arg string) bool {
+	for _, name := range []string{"--settings", "--permission-prompt-tool", "--disallowedTools"} {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeCodeRetryableClass classifies a "result" event's reported failure
