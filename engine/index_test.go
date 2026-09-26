@@ -495,6 +495,9 @@ func TestSessionIndexLastPromptTokensFoldsDelegatedUsage(t *testing.T) {
 	if ix.LastInputTokens != last.InputTokens {
 		t.Errorf("cold LastInputTokens = %d, want %d (one last_input_tokens field, served live or cold)", ix.LastInputTokens, last.InputTokens)
 	}
+	if ix.Usage != s.Usage() {
+		t.Errorf("cold Usage = %+v, want %+v (the index mirrors Session.Usage)", ix.Usage, s.Usage())
+	}
 }
 
 // TestReadSessionIndexRefoldsStaleVersionForNewField: a version-1 sidecar must refold.

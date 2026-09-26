@@ -334,6 +334,9 @@ func (f *indexFold) applyIndexRecord(rec indexRecord, isLast bool) error {
 			f.ix.LastPromptTokens = rec.Usage.InputTokens + rec.Usage.CacheReadTokens + rec.Usage.CacheWriteTokens
 		}
 	case recClaudeCodeUsage:
+		if rec.Usage != nil {
+			f.addUsage(*rec.Usage)
+		}
 		if last := claudeCodeLastUsage(rec.Usage, rec.ClaudeCodeLastUsage); last != nil {
 			f.ix.LastInputTokens = last.InputTokens
 			f.ix.LastPromptTokens = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens

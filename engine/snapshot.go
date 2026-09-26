@@ -58,7 +58,7 @@ import (
 // field added to the schema needs no migration path: bump this and every
 // stored snapshot falls back to a full replay on its next load and is
 // rewritten from the next trigger.
-const sessionSnapshotVersion = 2
+const sessionSnapshotVersion = 3
 
 // sessionSnapshotSuffix names a session's snapshot file. Like the metadata
 // index's own suffix it deliberately does not end in ".jsonl", so no

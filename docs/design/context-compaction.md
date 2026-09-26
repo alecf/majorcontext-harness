@@ -574,9 +574,11 @@ still reads 0.
 On the claude-code lane, `window_tokens` is the `contextWindow` the CLI
 reports in the "result" event's `modelUsage` entry for the model named by
 its "system"/"init" event. `recClaudeCodeUsage` records it, and a model
-switch clears it. Until the CLI reports one, `window_tokens` is modelmeta's
-200,000 stand-in. `maybeAutoCompact` never runs for a delegated turn and
-reads neither value.
+switch clears it. Until the CLI reports one, `window_tokens` is 0:
+`modelmeta.ContextWindow` reports no figure for a claude-code ref, so
+`resolveContextWindow` leaves the window unknown unless an explicit
+configuration value sets it. `maybeAutoCompact` never runs for a delegated
+turn and reads neither value.
 
 ## 5. Non-goals
 

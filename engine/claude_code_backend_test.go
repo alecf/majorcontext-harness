@@ -3067,3 +3067,32 @@ func TestClaudeCodeContextGaugeReportsLastCallAndCLIWindow(t *testing.T) {
 		t.Errorf("after a model switch, live/reloaded ContextWindowTokens() = %d/%d, want 0 (the old model's CLI-reported window must not carry over)", live, cold)
 	}
 }
+
+// TestSnapshotDiscardsPreWindowVersion: a snapshot written before
+// sessionSnapshotVersion covered ClaudeCodeWindowTokens carries the field as
+// zero, so trusting it loses a window the CLI already reported. Recovery must
+// discard it and re-derive the window from the recClaudeCodeUsage fold.
+func TestSnapshotDiscardsPreWindowVersion(t *testing.T) {
+	s, _ := claudeCodeTestSession(t, "per_call_usage")
+	if _, err := s.Prompt(context.Background(), "run two commands"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	s.cfg.SnapshotEveryRecords = idleOnly
+	s.snapshotOnIdle()
+	s.waitSnapshots()
+	rewriteSnapshot(t, s.cfg.SessionDir, s.ID, func(snap *sessionSnapshot) {
+		snap.Version = 2
+		snap.ClaudeCodeWindowTokens = 0
+	})
+
+	loaded, err := LoadSession(Config{SessionDir: s.cfg.SessionDir, ClaudeCode: s.cfg.ClaudeCode}, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.replayedRecords != loaded.recordsWritten {
+		t.Errorf("replayed %d of %d records, want a FULL replay — a pre-window snapshot must be discarded", loaded.replayedRecords, loaded.recordsWritten)
+	}
+	if got := loaded.ContextWindowTokens(); got != 1_000_000 {
+		t.Errorf("ContextWindowTokens() = %d, want 1000000 re-derived from the journal", got)
+	}
+}

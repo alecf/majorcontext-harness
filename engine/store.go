@@ -2367,6 +2367,9 @@ func readSessionInfo(path string) (SessionInfo, error) {
 				info.LastPromptTokens = rec.Usage.InputTokens + rec.Usage.CacheReadTokens + rec.Usage.CacheWriteTokens
 			}
 		case recClaudeCodeUsage:
+			if rec.Usage != nil {
+				info.addUsage(*rec.Usage)
+			}
 			if last := claudeCodeLastUsage(rec.Usage, rec.ClaudeCodeLastUsage); last != nil {
 				info.LastInputTokens = last.InputTokens
 				info.LastPromptTokens = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
