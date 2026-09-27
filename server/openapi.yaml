@@ -52,7 +52,7 @@ components:
   schemas:
     Health:
       type: object
-      required: [version, vcs_revision, vcs_time, session_sync, started_at]
+      required: [version, vcs_revision, vcs_time, session_sync, started_at, capabilities]
       properties:
         version:
           type: string
@@ -96,6 +96,24 @@ components:
             present, "" only when the serving process never set it (not
             expected in production; a defensive default).
           example: "2024-06-01T12:00:00Z"
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: >
+            Stable, lowercase snake_case feature names this harness
+            advertises. Always present, even empty. A name, once shipped,
+            is never removed or repurposed; retiring a guarantee ships a
+            new name instead. An older harness that omits this field
+            advertises no capabilities, never an error.
+
+
+            "delta_row_identity": text.delta, reasoning.delta and tool.start
+            carry the owning message's id and created_at once known. A
+            consumer must still tolerate an empty id on a delta; the name
+            says the fields are populated at all, not that every delta is
+            identified.
+          example: ["delta_row_identity"]
 
     CommandArg:
       type: object
