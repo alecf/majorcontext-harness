@@ -289,6 +289,11 @@ func (c *Client) Prewarm(ctx context.Context, req *provider.Request) error {
 // why family is the gate: an ordinary "openai" entry never even looks at
 // these headers, whether or not a proxy in front of it happens to echo
 // some of the same header names.
+// codexRateLimitsEventType names the Codex websocket telemetry frame
+// carrying a rate-limit snapshot. It carries no response content, so it
+// never counts toward stream.responseFrames.
+const codexRateLimitsEventType = "codex.rate_limits"
+
 func (c *Client) codexSubscriptionUsage(h http.Header) *message.SubscriptionUsage {
 	if c.family() != CodexFamily {
 		return nil
@@ -436,10 +441,11 @@ type stream struct {
 	usage         provider.Usage
 	hasToolCall   bool
 	// subUsage is this response's captured subscription-usage snapshot —
-	// set only for a CodexFamily client (see Client.codexSubscriptionUsage
-	// and wsPool.stream, the two sources), nil otherwise. Carried onto the
-	// EventDone event queued in the "response.completed"/"response.
-	// incomplete" case below.
+	// set only for a CodexFamily client, from the HTTP path's response
+	// headers (Client.codexSubscriptionUsage) or the ws path's in-band
+	// "codex.rate_limits" event (this file's handle), nil otherwise.
+	// Carried onto the EventDone event queued in the "response.completed"/
+	// "response.incomplete" case below.
 	subUsage *message.SubscriptionUsage
 
 	// onComplete publishes transport-local response lineage after stream.handle
@@ -507,7 +513,9 @@ func (s *stream) Next() (provider.Event, error) {
 			// retryable.
 			return provider.Event{}, provider.MarkStreamTruncated(err)
 		}
-		s.responseFrames++
+		if name != codexRateLimitsEventType {
+			s.responseFrames++
+		}
 		if err := s.handle(name, data); err != nil {
 			var miss *previousResponseNotFoundError
 			if errors.As(err, &miss) && s.recoverChainMiss != nil {
@@ -523,6 +531,7 @@ func (s *stream) Next() (provider.Event, error) {
 				s.usage = provider.Usage{}
 				s.hasToolCall = false
 				s.responseFrames = 0
+				s.subUsage = nil
 				s.queue = nil
 				continue
 			}
@@ -864,6 +873,16 @@ func (s *stream) handle(name string, data []byte) error {
 		case "message":
 			if it.kind == "" {
 				it.kind = "message"
+			}
+		}
+
+	case codexRateLimitsEventType:
+		// Usage reporting is cosmetic: an unparseable frame is treated as
+		// absent, never a turn failure. An error here would also bypass
+		// recoverChainMiss, which runs only for previousResponseNotFound.
+		if familyOrDefault(s.family) == CodexFamily {
+			if usage, err := codexSubscriptionUsageFromRateLimitsEvent(data); err == nil && usage != nil {
+				s.subUsage = usage
 			}
 		}
 
