@@ -73,7 +73,7 @@ const OriginOperatorBatch = "operator_batch"
 // to a provider and never changes how the engine schedules or delivers the
 // prompt.
 //
-// # Trust model: every value here is a CLAIM, not a verified fact
+// # Trust model: caller-supplied values are claims, not verified facts
 //
 // Harness authenticates an HTTP caller with a single bearer token
 // (server.Options.AuthToken) — one trust level, not one per human/service
@@ -87,10 +87,8 @@ const OriginOperatorBatch = "operator_batch"
 // token — to distinguish that call from the console's own relay of a real
 // keystroke.
 //
-// PromptSourceTask is the ONE exception: it is server-derived, never
-// caller-suppliable (see its own doc comment and
-// server/prompt_source.go's rejection of it over HTTP) — the only value
-// in this type harness itself computes rather than merely records.
+// PromptSourceTask and PromptSourceCommand are server-derived values. An HTTP
+// caller cannot assert either one (see server/prompt_source.go).
 //
 // A consumer (boxes' console, notably) MUST NOT present PromptSourceTyped
 // as proof of human authorship, or any other value as proof of its own
@@ -127,6 +125,9 @@ const (
 	// send_message_to_box-shaped delivery), asserted by the relaying
 	// caller — this engine has no notion of "box" itself.
 	PromptSourceCrossBox PromptSource = "cross_box"
+	// PromptSourceCommand marks text expanded from a repository prompt command.
+	// Only harness may set this source; an HTTP caller cannot assert it.
+	PromptSourceCommand PromptSource = "command"
 )
 
 // Normalized returns s, or PromptSourceAPI when s is empty — the recorded
