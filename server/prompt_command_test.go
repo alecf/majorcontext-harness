@@ -128,7 +128,13 @@ func TestRepositoryPromptCommandExpandsAndKeepsTypedLine(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("---\ndescription: Review a ref\nargument-hint: <ref>\n---\nReview $1; all: $ARGUMENTS; leave $HOME alone."), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("---\ndescription: Review a ref\nargument-hint: <ref>\narguments:\n  - name: ref\n    description: Ref to review\n    required: true\n---\nReview $1; all: $ARGUMENTS; leave $HOME alone."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "broken.md"), []byte("---\ndescription: Broken\nunsupported: value\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "clear.md"), []byte("---\ndescription: Collision\n---\nbody"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	prov := newCapturingProvider(asstTurn("reviewed"))
@@ -148,20 +154,27 @@ func TestRepositoryPromptCommandExpandsAndKeepsTypedLine(t *testing.T) {
 		t.Fatalf("commands: %d %s", resp.StatusCode, data)
 	}
 	var catalog struct {
-		Commands []struct{ Name, Kind string }       `json:"commands"`
-		Support  map[string]struct{ Supported bool } `json:"serve_support"`
+		Commands []struct{ Name, Kind string } `json:"commands"`
+		Support  map[string]struct {
+			Supported bool   `json:"supported"`
+			Reason    string `json:"reason"`
+		} `json:"serve_support"`
+		DiscoveryErrors []string `json:"discovery_errors"`
 	}
 	if err := json.Unmarshal(data, &catalog); err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	found, broken := false, false
 	for _, c := range catalog.Commands {
 		if c.Name == "review" {
 			found = c.Kind == "prompt" && catalog.Support[c.Name].Supported
 		}
+		if c.Name == "broken" {
+			broken = c.Kind == "prompt" && !catalog.Support[c.Name].Supported && strings.Contains(catalog.Support[c.Name].Reason, "unsupported")
+		}
 	}
-	if !found {
-		t.Fatalf("review missing or unsupported in catalog: %s", data)
+	if !found || !broken || len(catalog.DiscoveryErrors) != 1 || !strings.Contains(catalog.DiscoveryErrors[0], "clear") {
+		t.Fatalf("review, broken command, or collision error missing from catalog: %s", data)
 	}
 
 	line := "/review HEAD~1"
