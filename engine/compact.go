@@ -305,6 +305,15 @@ func isLoneExistingSummary(folded []message.Message) bool {
 
 const compactCommandText = "/compact"
 
+// isCompactCommandText reports whether text invokes the Claude Code CLI's
+// own /compact command, which takes optional instructions after the name.
+// The CLI honors it from plain stream-json stdin, so a delegated turn
+// driving this text compacts whether or not harness resolved a command.
+func isCompactCommandText(text string) bool {
+	fields := strings.Fields(text)
+	return len(fields) > 0 && fields[0] == compactCommandText
+}
+
 // RunCompactCommand is the engine entry point for a resolved compact
 // command: POST /session/{id}/compact and the serve/run dispatchers.
 func (s *Session) RunCompactCommand(ctx context.Context, opts CompactOptions) (CompactResult, error) {
