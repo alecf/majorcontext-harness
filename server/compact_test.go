@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -684,7 +685,7 @@ func TestCompactEndpointDelegatesToClaudeCodeCLI(t *testing.T) {
 
 	claudeModel := message.ModelRef{Provider: engine.ClaudeCodeProviderFamily, Model: "sonnet"}
 	nativeProv := &scriptedProvider{name: "test"}
-	h := claudeCodeSwitchHarness(t, claudeModel, engine.ClaudeCodeConfig{BinaryPath: bin}, nativeProv)
+	h := claudeCodeSwitchHarness(t, claudeModel, engine.ClaudeCodeConfig{BinaryPath: bin}, nativeProv, 0)
 	id := h.createSession("")
 	sse := h.openSSE("", "")
 
@@ -844,7 +845,7 @@ func TestCompactEndpointClaudeCodeCompactedCarriesCompactStartedAt(t *testing.T)
 
 	claudeModel := message.ModelRef{Provider: engine.ClaudeCodeProviderFamily, Model: "sonnet"}
 	nativeProv := &scriptedProvider{name: "test"}
-	h := claudeCodeSwitchHarness(t, claudeModel, engine.ClaudeCodeConfig{BinaryPath: bin}, nativeProv)
+	h := claudeCodeSwitchHarness(t, claudeModel, engine.ClaudeCodeConfig{BinaryPath: bin}, nativeProv, 0)
 	id := h.createSession("")
 	sse := h.openSSE("", "")
 
@@ -857,5 +858,90 @@ func TestCompactEndpointClaudeCodeCompactedCarriesCompactStartedAt(t *testing.T)
 	ev := sse.waitFor(t, "compaction.claude_code")
 	if ev.CompactStartedAt.IsZero() {
 		t.Error(`compaction.claude_code CompactStartedAt is zero, want the instant this stream observed the preceding "compacting" status`)
+	}
+}
+
+// contextWindowHarness builds a server whose sessions run with an explicit
+// engine.Config.ContextWindowTokens (mirroring requireWindowHarness's own
+// NewSession override in server/context_window_required_test.go), so a test
+// can assert the durable ContextWindowTokens field against a KNOWN value
+// instead of "test/m1"'s unconfigured 0.
+func contextWindowHarness(t *testing.T, prov provider.Provider, windowTokens int) *harness {
+	t.Helper()
+	const token = "secret-run-token"
+	dir := t.TempDir()
+	var srv *Server
+	srv = newServer(t, dir, prov, 0, func(o *Options) {
+		o.NewSession = func(m message.ModelRef, workDir, parentSession string) (*engine.Session, error) {
+			if m.IsZero() {
+				m = message.ModelRef{Provider: prov.Name(), Model: "m1"}
+			}
+			return engine.NewSession(engine.Config{
+				Providers:           provider.Registry{prov.Name(): prov},
+				Model:               m,
+				SessionDir:          dir,
+				WorkDir:             workDir,
+				ParentSession:       parentSession,
+				OnEvent:             func(ev engine.Event) { srv.Publish(ev) },
+				ContextWindowTokens: windowTokens,
+			}), nil
+		}
+	})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	return &harness{t: t, dir: dir, token: token, srv: srv, ts: ts}
+}
+
+func TestCompactEndpointHistoryCompactedCarriesContextFields(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactAsstTurn("one", provider.Usage{InputTokens: 10}),
+		compactAsstTurn("two", provider.Usage{InputTokens: 10}),
+		compactAsstTurn("gist", provider.Usage{InputTokens: 5}),
+	}}
+	const windowTokens = 1000
+	h := contextWindowHarness(t, prov, windowTokens)
+	id := h.createSession("test/m1")
+	h.promptAndWaitIdle(id, "go1")
+	h.promptAndWaitIdle(id, "go2")
+
+	sse := h.openSSE("?from=0", "")
+	resp, data := h.do("POST", "/session/"+id+"/compact", map[string]any{"keep_turns": 1})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("compact status %d: %s", resp.StatusCode, data)
+	}
+
+	ev := sse.waitFor(t, "history.compacted")
+	if ev.ContextUsedTokens <= 0 {
+		t.Errorf("history.compacted context_used_tokens = %d, want a positive post-fold estimate", ev.ContextUsedTokens)
+	}
+	if ev.ContextWindowTokens != windowTokens {
+		t.Errorf("history.compacted context_window_tokens = %d, want the session's configured window %d", ev.ContextWindowTokens, windowTokens)
+	}
+}
+
+func TestCompactEndpointClaudeCodeCompactedCarriesContextFields(t *testing.T) {
+	bin := buildFakeClaudeForServer(t)
+	t.Setenv("FAKE_CLAUDE_MODE", "compact_turn")
+	t.Setenv("FAKE_CLAUDE_LOG", filepath.Join(t.TempDir(), "invocations.jsonl"))
+
+	claudeModel := message.ModelRef{Provider: engine.ClaudeCodeProviderFamily, Model: "sonnet"}
+	nativeProv := &scriptedProvider{name: "test"}
+	const windowTokens = 1000
+	h := claudeCodeSwitchHarness(t, claudeModel, engine.ClaudeCodeConfig{BinaryPath: bin}, nativeProv, windowTokens)
+	id := h.createSession("")
+	sse := h.openSSE("", "")
+
+	resp, data := h.do("POST", "/session/"+id+"/compact", map[string]any{})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("compact on a claude-code-delegated session status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	sse.waitFor(t, "compaction.started")
+	ev := sse.waitFor(t, "compaction.claude_code")
+	if ev.ContextUsedTokens != ev.PostTokens {
+		t.Errorf("compaction.claude_code context_used_tokens = %d, want post_tokens %d", ev.ContextUsedTokens, ev.PostTokens)
+	}
+	if ev.ContextWindowTokens != windowTokens {
+		t.Errorf("compaction.claude_code context_window_tokens = %d, want the session's configured window %d", ev.ContextWindowTokens, windowTokens)
 	}
 }

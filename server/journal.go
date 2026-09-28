@@ -178,14 +178,18 @@ type Event struct {
 	PreTokens  int    `json:"pre_tokens,omitempty"`
 	PostTokens int    `json:"post_tokens,omitempty"`
 
-	// ContextUsedTokens/ContextWindowTokens are carried by evtTurnEnd only,
-	// mirroring contextJSON's two fields. Both 0 (key absent) when
-	// recordTurnEnd had no live *engine.Session to read. For a live session
-	// whose reading a fold invalidated with no later turn to remeasure it,
-	// ContextUsedTokens instead carries engine's own size estimate (see
-	// contextJSON's own doc comment), never a fold-invalidated measurement;
-	// ContextWindowTokens stays populated throughout. 0 here means unknown,
-	// never empty.
+	// ContextUsedTokens/ContextWindowTokens are carried by evtTurnEnd,
+	// evtHistoryCompacted, and evtClaudeCodeCompacted. evtTurnEnd and
+	// evtHistoryCompacted mirror contextJSON's two fields: both 0 (key
+	// absent) when the publishing call had no live *engine.Session to
+	// read; for a live session whose reading a fold invalidated with no
+	// later turn to remeasure it, ContextUsedTokens instead carries
+	// engine's own size estimate (see contextJSON's own doc comment),
+	// never a fold-invalidated measurement, while ContextWindowTokens
+	// stays populated throughout. evtClaudeCodeCompacted always sets
+	// ContextUsedTokens from PostTokens, live session or not — never this
+	// projection — and only its ContextWindowTokens depends on one. 0
+	// here means unknown, never empty.
 	ContextUsedTokens   int `json:"context_used_tokens,omitempty"`
 	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
 
@@ -493,7 +497,7 @@ func (s *Server) Publish(ev engine.Event) {
 	case engine.EventPromptQueued, engine.EventPromptDequeued:
 		s.publishQueue(ev)
 	case engine.EventHistoryCompacted:
-		s.publishHistoryCompacted(ev)
+		s.publishHistoryCompacted(ev, s.resolveLive(ev.SessionID).session())
 	case engine.EventCompactionFailed:
 		s.publishLive(Event{Type: evtCompactionFailed, SessionID: ev.SessionID, Error: ev.Text})
 	case engine.EventCompactionStarted:
@@ -513,14 +517,17 @@ func (s *Server) Publish(ev engine.Event) {
 		// Durable — see evtClaudeCodeCompacted's own doc comment for why
 		// this differs from evtCompactionFailed/evtCompactionStarted just
 		// above, which stay live-only.
+		_, windowTokens := sessionContextFields(s.resolveLive(ev.SessionID).session())
 		s.emitDurable(Event{
-			Type:             evtClaudeCodeCompacted,
-			SessionID:        ev.SessionID,
-			Text:             ev.Text,
-			Trigger:          ev.ClaudeCodeCompactTrigger,
-			PreTokens:        ev.ClaudeCodeCompactPreTokens,
-			PostTokens:       ev.ClaudeCodeCompactPostTokens,
-			CompactStartedAt: ev.CompactStartedAt,
+			Type:                evtClaudeCodeCompacted,
+			SessionID:           ev.SessionID,
+			Text:                ev.Text,
+			Trigger:             ev.ClaudeCodeCompactTrigger,
+			PreTokens:           ev.ClaudeCodeCompactPreTokens,
+			PostTokens:          ev.ClaudeCodeCompactPostTokens,
+			CompactStartedAt:    ev.CompactStartedAt,
+			ContextUsedTokens:   ev.ClaudeCodeCompactPostTokens,
+			ContextWindowTokens: windowTokens,
 		})
 	case engine.EventCommand:
 		// commandSeen is not marked here: loadJournal rebuilds it from the
@@ -535,9 +542,9 @@ func (s *Server) Publish(ev engine.Event) {
 // AFTER the summary message's EventMessage has already been published (see
 // Publish's engine.EventMessage case, which journals via syncMessages) — so
 // the journal order is always summary message, then history.compacted,
-// exactly as docs/design/context-compaction.md §4 requires.
-func (s *Server) publishHistoryCompacted(ev engine.Event) {
-	s.emitDurable(Event{
+// exactly as docs/design/context-compaction.md §4 requires. sess is the folded session, read via sessionContextFields.
+func (s *Server) publishHistoryCompacted(ev engine.Event, sess *engine.Session) {
+	out := Event{
 		Type:               evtHistoryCompacted,
 		SessionID:          ev.SessionID,
 		CompactFirstID:     ev.CompactFirstID,
@@ -545,7 +552,25 @@ func (s *Server) publishHistoryCompacted(ev engine.Event) {
 		CompactTurnsFolded: ev.CompactTurnsFolded,
 		CompactSummaryID:   ev.CompactSummaryID,
 		CompactStartedAt:   ev.CompactStartedAt,
-	})
+	}
+	out.ContextUsedTokens, out.ContextWindowTokens = sessionContextFields(sess)
+	s.emitDurable(out)
+}
+
+// sessionContextFields is the one ContextReading/ContextWindowTokens
+// implementation recordTurnEnd, publishHistoryCompacted, and
+// evtClaudeCodeCompacted's Publish case all call; sess nil reports the
+// zero "unknown" pair. evtClaudeCodeCompacted only ever consults the
+// window return here — its ContextUsedTokens comes from PostTokens, live
+// session or not.
+func sessionContextFields(sess *engine.Session) (used, window int) {
+	if sess == nil {
+		return 0, 0
+	}
+	if last, ok := sess.ContextReading(); ok {
+		used = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
+	}
+	return used, sess.ContextWindowTokens()
 }
 
 // publishGoal journals a durable goal.* record and folds the event into the
@@ -832,10 +857,7 @@ func (s *Server) recordTurnEnd(sessionID string, sess *engine.Session, outcome s
 	}
 	ev := &Event{Type: evtTurnEnd, SessionID: sessionID, Outcome: outcome, Error: errStr}
 	if sess != nil {
-		if last, ok := sess.ContextReading(); ok {
-			ev.ContextUsedTokens = last.InputTokens + last.CacheReadTokens + last.CacheWriteTokens
-		}
-		ev.ContextWindowTokens = sess.ContextWindowTokens()
+		ev.ContextUsedTokens, ev.ContextWindowTokens = sessionContextFields(sess)
 	}
 	s.mu.Lock()
 	s.lastTurn[sessionID] = &turnOutcome{outcome: outcome, error: errStr}
