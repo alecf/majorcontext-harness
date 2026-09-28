@@ -20,9 +20,10 @@ import (
 // the loss is bounded to roughly the masked value's own length, never
 // anywhere close to the whole remainder.
 func TestMaskSecretsDoesNotDeleteAdjacentContent(t *testing.T) {
+	t.Parallel()
 	before := "https://example.com/callback?state=xyz&"
-	secret := strings.Repeat("A", 1_000_000) // a 1 MB "value" with no whitespace anywhere near it
-	after := "&next=" + strings.Repeat("legituserdata", 5000) + "&done=1"
+	secret := strings.Repeat("A", 6_000) // no whitespace near it; far above the {8,1000} cap
+	after := "&next=" + strings.Repeat("legituserdata", 50) + "&done=1"
 	in := before + "token=" + secret + after
 
 	got := maskSecrets(in)
@@ -37,12 +38,12 @@ func TestMaskSecretsDoesNotDeleteAdjacentContent(t *testing.T) {
 	// The masked SPAN itself must be small (per the {8,1000} cap — round-3
 	// raised it from 200 so a long SECRET masks more completely; the
 	// character class alone is what protects adjacent content): the vast
-	// majority of the 1 MB run of "A"s must still be present, UNMASKED, in
-	// the output — only the first (up to) 1000 of them are inside the
-	// match. (Direct length subtraction is not a safe measure: with the
-	// bulk of the "A" run surviving, len(got) is barely smaller than
-	// len(in), which is exactly the point — so this counts surviving "A"
-	// runs directly instead.)
+	// majority of the "A" run must still be present, UNMASKED, in the
+	// output — only the first (up to) 1000 of them are inside the match.
+	// (Direct length subtraction is not a safe measure: with the bulk of
+	// the "A" run surviving, len(got) is barely smaller than len(in),
+	// which is exactly the point — so this counts surviving "A" runs
+	// directly instead.)
 	longestARun := 0
 	current := 0
 	for _, r := range got {
@@ -56,7 +57,7 @@ func TestMaskSecretsDoesNotDeleteAdjacentContent(t *testing.T) {
 		}
 	}
 	if longestARun < len(secret)-1050 {
-		t.Errorf("masking destroyed the bulk of a 1 MB legitimate value: longest surviving run of \"A\" = %d, want close to the original %d (only ~1000 chars should ever be inside the match)",
+		t.Errorf("masking destroyed the bulk of a large legitimate value: longest surviving run of \"A\" = %d, want close to the original %d (only ~1000 chars should ever be inside the match)",
 			longestARun, len(secret))
 	}
 }
@@ -71,6 +72,7 @@ func TestMaskSecretsDoesNotDeleteAdjacentContent(t *testing.T) {
 // the class itself: masking must stop at the first structural delimiter,
 // so the parameters AFTER the secret survive byte-for-byte.
 func TestMaskSecretsValueClassStopsAtDelimiters(t *testing.T) {
+	t.Parallel()
 	in := `GET "https://bucket.s3.amazonaws.com/obj?access_key=AKIAEXAMPLE12345&Expires=1735689600&Signature=abcdefghijklmnop" -> 200`
 	got := maskSecrets(in)
 
@@ -110,6 +112,7 @@ func TestMaskSecretsValueClassStopsAtDelimiters(t *testing.T) {
 // completely unmasked — the two code paths (single-span fallback vs.
 // per-line) disagreed about which bytes are secret.
 func TestMaskSecretsMultilineJSONNotBypassedByLineSplitting(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, in, wantContains, wantValueGone string
 	}{
@@ -146,6 +149,7 @@ func TestMaskSecretsMultilineJSONNotBypassedByLineSplitting(t *testing.T) {
 // quoted-JSON "key": "value" shape, both with and without whitespace
 // around the colon.
 func TestMaskSecretsQuotedJSON(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, in, wantContains, wantValueGone string
 	}{
@@ -188,6 +192,7 @@ func TestMaskSecretsQuotedJSON(t *testing.T) {
 // TestMaskSecretsSpaceYAML is review finding N3's red test for the
 // space-YAML "key: value" shape.
 func TestMaskSecretsSpaceYAML(t *testing.T) {
+	t.Parallel()
 	in := "database:\n  host: localhost\n  password: hunter2hunter2hunter2\napi_key: sk-ANTAPI03abcdefghijklmnop\n"
 	got := maskSecrets(in)
 	if strings.Contains(got, "hunter2hunter2hunter2") {
@@ -212,6 +217,7 @@ func TestMaskSecretsSpaceYAML(t *testing.T) {
 // secretValueClass), so it never matched; the JSON alternative requires a
 // QUOTED key, which a bare `TOKEN` lacks. Both shapes miss it.
 func TestMaskSecretsQuotedEnvValue(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, in, wantMasked, wantValueGone string }{
 		{"double-quoted-equals", `export TOKEN="secretvalue123456"`, `TOKEN="***"`, "secretvalue123456"},
 		{"single-quoted-equals", `export TOKEN='secretvalue123456'`, `TOKEN='***'`, "secretvalue123456"},
@@ -233,6 +239,7 @@ func TestMaskSecretsQuotedEnvValue(t *testing.T) {
 // TestMaskSecretsAuthorizationBearer is review finding N3's red test for
 // the Authorization: Bearer <token> header shape.
 func TestMaskSecretsAuthorizationBearer(t *testing.T) {
+	t.Parallel()
 	in := "GET /api/v1/widgets HTTP/1.1\nHost: example.com\nAuthorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.somepayload.signaturevalue\nAccept: application/json\n"
 	got := maskSecrets(in)
 	if strings.Contains(got, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.somepayload.signaturevalue") {
@@ -252,6 +259,7 @@ func TestMaskSecretsAuthorizationBearer(t *testing.T) {
 // becoming "token:*** if..."), but the corpus covers the same shape in a
 // few other common forms too.
 func TestMaskSecretsCodeCorpus(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		// The exact named regression (N4): Go short variable declaration.
 		"token := lexer.Next()",
@@ -289,6 +297,7 @@ func TestMaskSecretsCodeCorpus(t *testing.T) {
 // within the first ToolResultInlineBytes reached the model in cleartext
 // regardless of masking existing at all.
 func TestMaskSecretsPreview(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	secretValue := "AKIAABCDEFGHIJKLMNOP"
 	text := "AWS_SECRET_ACCESS_KEY=" + secretValue + "\n" + linesText(3000)
@@ -324,6 +333,7 @@ func TestMaskSecretsPreview(t *testing.T) {
 // left the header/read_tool_result advertising a size the sidecar file
 // did not have.
 func TestToolResultMetaBytesMatchesOnDiskLength(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	secretValue := strings.Repeat("A", 100) // a value substantially longer than "***"
 	text := "TOKEN=" + secretValue + "\n" + linesText(3000)
@@ -420,30 +430,35 @@ func maskSecretsPerfInput(secretEvery int) string {
 // that reintroduces the O(n²) shape earlier rounds fixed).
 func TestMaskSecretsPerformance(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		ceiling time.Duration
+		name     string
+		input    string
+		ceiling  time.Duration
+		skipRace bool
 	}{
 		// Never observed above ~20ms (the fast-reject path barely touches
 		// the regex engine at all) — 1s is already >>10x its worst
 		// observed cost, so it's left as-is.
-		{"no_candidates", maskSecretsPerfInput(0), 1 * time.Second},
+		{"no_candidates", maskSecretsPerfInput(0), 1 * time.Second, false},
 		// Documented worst-case-under-load: 1.06s (see the three CI runs
 		// cited in this function's doc comment). 10s is ~10x that, and
 		// ~15x the clean-isolation baseline (~0.66s).
-		{"sparse_realistic", maskSecretsPerfInput(300), 10 * time.Second}, // ~1 secret line per ~300 ordinary lines
-		// 120s, not 2s: this is the one case with no line-level fast-reject
-		// (see maskSecrets's doc comment), the pattern grew two more
-		// alternatives in round 3 (quoted-env values), and the race
-		// detector's instrumentation overhead on a regex-heavy path is
-		// large — measured ~1.8s plain, ~50s under `go test -race` after
-		// round 3 (was ~650ms / ~18s before). Still a ceiling, not a
-		// promise: it exists to catch a true hang, not to hold this
-		// documented-slower path to the sparse-case target.
-		{"single_huge_line", "TOKEN=" + strings.Repeat("y", 4_400_000), 120 * time.Second},
+		{"sparse_realistic", maskSecretsPerfInput(300), 10 * time.Second, false}, // ~1 secret line per ~300 ordinary lines
+		// This is the one case with no line-level fast-reject (see
+		// maskSecrets's doc comment), so it is the case most worth a
+		// ceiling. 20s is ~10x the observed plain-mode cost (~1.9s),
+		// the same headroom multiple as sparse_realistic. Skipped
+		// under -race: the race detector's instrumentation overhead on
+		// this regex-heavy path dominates the measurement, so the
+		// ceiling would guard instrumentation cost, not maskSecrets.
+		// BenchmarkMaskSecrets tracks real timing instead.
+		{"single_huge_line", "TOKEN=" + strings.Repeat("y", 4_400_000), 20 * time.Second, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.skipRace && raceEnabled {
+				t.Skip("ceiling measures race instrumentation, not maskSecrets; see BenchmarkMaskSecrets")
+			}
+
 			start := time.Now()
 			out := maskSecrets(tc.input)
 			elapsed := time.Since(start)
