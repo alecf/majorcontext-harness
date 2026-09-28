@@ -276,6 +276,72 @@ func TestSnapshotCarriesEveryFoldedField(t *testing.T) {
 	}
 }
 
+// TestSnapshotRetainsPositiveFoldEstimate is the red-first test for the gap
+// TestSnapshotCarriesEveryFoldedField leaves open: that test never folds,
+// so ContextUnknown/ContextFoldEstimate only ever round-trip at their zero
+// value, and a snapshot that dropped a genuine positive estimate on
+// capture or restore would still pass it. This test folds, freezes the
+// resulting estimate, and requires both the snapshot-loaded and the
+// full-replay-loaded session to reproduce it exactly.
+func TestSnapshotRetainsPositiveFoldEstimate(t *testing.T) {
+	dir := t.TempDir()
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 100, OutputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 200, OutputTokens: 10}),
+		compactSummaryTurn("gist", provider.Usage{InputTokens: 7, OutputTokens: 3}),
+	}}
+	s := NewSession(snapshotCfg(dir, prov, idleOnly))
+	drive(t, s, 2)
+	if _, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1}); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	want, ok := s.ContextReading()
+	if !ok || want.InputTokens <= 0 {
+		t.Fatalf("ContextReading after Compact = (%+v, %v), want a positive estimate", want, ok)
+	}
+	if err := s.PersistErr(); err != nil {
+		t.Fatalf("PersistErr: %v", err)
+	}
+	// drive's own turn-end snapshotOnIdle (engine.go) can still be
+	// in-flight here — startSnapshotLocked's coalescing flag would then
+	// silently skip the capture below, anchoring the snapshot BEFORE this
+	// fold instead of after it. Drain it first.
+	s.waitSnapshots()
+
+	s.snapshotOnIdle()
+	s.waitSnapshots()
+
+	snapLoaded, err := LoadSession(snapshotCfg(dir, snapshotTestProvider(0), idleOnly), s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession (snapshot path): %v", err)
+	}
+	if snapLoaded.replayedRecords >= snapLoaded.recordsWritten {
+		t.Fatalf("replayed %d of %d records — the snapshot was not used", snapLoaded.replayedRecords, snapLoaded.recordsWritten)
+	}
+
+	full := t.TempDir()
+	copyFile(t, sessionPath(dir, s.ID), sessionPath(full, s.ID))
+	fullLoaded, err := LoadSession(snapshotCfg(full, snapshotTestProvider(0), idleOnly), s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession (full replay): %v", err)
+	}
+
+	for name, loaded := range map[string]*Session{"snapshot": snapLoaded, "full replay": fullLoaded} {
+		if !loaded.ContextUnknown() {
+			t.Errorf("%s: ContextUnknown = false, want true", name)
+			continue
+		}
+		got, ok := loaded.ContextReading()
+		if !ok {
+			t.Errorf("%s: ContextReading ok = false, want true", name)
+			continue
+		}
+		if got.InputTokens != want.InputTokens {
+			t.Errorf("%s: ContextReading().InputTokens = %d, want %d (the fold-time estimate, carried across the snapshot round trip)", name, got.InputTokens, want.InputTokens)
+		}
+	}
+}
+
 // TestSnapshotFallbacks covers every way a snapshot can fail validation.
 // Each one must degrade to a full replay that produces the correct state —
 // "slower, never wrong".
