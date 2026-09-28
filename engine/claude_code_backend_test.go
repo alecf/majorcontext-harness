@@ -2642,19 +2642,15 @@ func killLeakedFakeClaude(t *testing.T, pidFile string) {
 }
 
 // TestClaudeCodeQueueInjectedMidTurnViaOpenStdin is the regression test for
-// the live production bug reported as "queue doesn't seem to be working in
-// opus subscription sessions" (box box_01m1f4g92bfb0a3e5863hqgbpw, session
-// ses_01m1f4hbpee1nvwzam39b7fwm3): a prompt enqueued via POST
-// .../sessions/{id}/send while a claude-code-lane turn was busy sat
-// durably queued, undelivered, for the ENTIRE remainder of that turn —
-// live-reproduced sitting queued 6+ minutes with the underlying `claude`
-// turn still actively running — because runClaudeCodeTurn used to write
-// its ONE input line and close stdin immediately, so a prompt queued after
-// that close could never reach the already-running child; only the
-// server's ordinary end-of-turn tail dispatch (a NEW turn) ever delivered
-// it. A native-provider session on the same box, by contrast, delivers a
-// mid-turn queued prompt within seconds via drainQueuedPromptsIntoHistory
-// at the next tool-call boundary.
+// a prompt enqueued via POST .../sessions/{id}/send while a
+// claude-code-lane turn was busy: it sat durably queued, undelivered, for
+// the ENTIRE remainder of that turn, because runClaudeCodeTurn used to
+// write its ONE input line and close stdin immediately, so a prompt
+// queued after that close could never reach the already-running child;
+// only the server's ordinary end-of-turn tail dispatch (a NEW turn) ever
+// delivered it. A native-provider session on the same box, by contrast,
+// delivers a mid-turn queued prompt within seconds via
+// drainQueuedPromptsIntoHistory at the next tool-call boundary.
 //
 // This proves the fix directly against the mechanism: runClaudeCodeTurn's
 // stdin-writer pump keeps the CLI child's stdin OPEN across the whole
@@ -2762,8 +2758,8 @@ func TestClaudeCodeQueueInjectedMidTurnViaOpenStdin(t *testing.T) {
 }
 
 // TestClaudeCodeQueueInjectionStampsOperatorBatch is the named-failure
-// test for the live console mis-split bug (meetneptune/boxes:
-// msg_01m210y3yvfmhtykzhd9j6gs2w rendered as 4 fake user bubbles): the
+// test for a console mis-split bug (a queued prompt rendered as 4 fake
+// user bubbles): the
 // delegated backend's own mid-turn drain (claude_code_backend.go, the
 // pump goroutine's <-wake branch) appended a message with no Origin and
 // no structured prompt list, forcing a client to guess boundaries from
@@ -2843,13 +2839,12 @@ func TestClaudeCodeQueueInjectionStampsOperatorBatch(t *testing.T) {
 }
 
 // TestClaudeCodeMidTurnInjectionWriteFailureDoesNotStrandWatermark is the
-// regression test for an adversarial-review finding on #231 (PR
-// majorcontext/harness#231, commit 7918b6d): a mid-turn queued prompt
-// whose stdin write to the running `claude` child FAILS (the child's read
-// end closes right as the injection lands — a `claude --bg` turn, or any
-// child racing its own exit against the wake) was silently and
-// PERMANENTLY lost, contradicting the pump's own "a delay, never a loss"
-// doc comment (runClaudeCodeTurn, engine/claude_code_backend.go).
+// regression test for a mid-turn queued prompt whose stdin write to the
+// running `claude` child FAILS (the child's read end closes right as the
+// injection lands — a `claude --bg` turn, or any child racing its own
+// exit against the wake): the prompt was silently and PERMANENTLY lost,
+// contradicting the pump's own "a delay, never a loss" doc comment
+// (runClaudeCodeTurn, engine/claude_code_backend.go).
 //
 // Root cause: the pump appends the injected block into session history
 // BEFORE attempting the write (so a failed write still leaves the block
@@ -2953,14 +2948,13 @@ func TestClaudeCodeMidTurnInjectionWriteFailureDoesNotStrandWatermark(t *testing
 }
 
 // TestClaudeCodeStopRetiresPumpBlockedInStdinWrite is the regression test
-// for the second adversarial-review finding on #231 (PR
-// majorcontext/harness#231, commit 7918b6d): a stop landing (the child's
-// own terminal "result" event arrives, closing stopPump) while the
-// stdin-writer pump is BLOCKED inside its own stdin.Write call must still
-// retire the pump promptly — not wedge <-pumpDone (and so the whole
-// runClaudeCodeTurn call) until ctx cancellation, the same `claude --bg`
-// class of wedge the StdoutPipe/StderrPipe handling elsewhere in this file
-// already exists to prevent, just one pipe over.
+// for a stop landing (the child's own terminal "result" event arrives,
+// closing stopPump) while the stdin-writer pump is BLOCKED inside its own
+// stdin.Write call: the pump must still retire promptly — not wedge
+// <-pumpDone (and so the whole runClaudeCodeTurn call) until ctx
+// cancellation, the same `claude --bg` class of wedge the
+// StdoutPipe/StderrPipe handling elsewhere in this file already exists to
+// prevent, just one pipe over.
 //
 // fakeclaude's "queue_injection_blocked_write" mode never reads stdin
 // again after its own first marker message, so the driver's own mid-turn

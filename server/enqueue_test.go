@@ -65,8 +65,8 @@ func (h *harness) waitIdle(id string) waitJSON {
 }
 
 // TestEnqueueIdleDispatchesImmediately is the red-first test for POST
-// /session/{id}/enqueue's idle happy path (Task 4 of docs/plans/2026-07-21-
-// durable-enqueue.md): an idle session's free run slot is claimed, the
+// /session/{id}/enqueue's idle happy path: an idle session's free run slot
+// is claimed, the
 // prompt is durably enqueued (fsynced before any response), and — since it
 // is also the queue head — dispatched immediately, reported "started".
 func TestEnqueueIdleDispatchesImmediately(t *testing.T) {
@@ -380,8 +380,8 @@ func TestEnqueueWatermarkSurvivesRestart(t *testing.T) {
 }
 
 // TestQueueGetReturnsWatermarkAndPending is the red-first test for GET
-// /session/{id}/queue (Task 6 of docs/plans/2026-07-21-durable-enqueue.md):
-// the reconciliation read surface. While the session is busy (queueProv's
+// /session/{id}/queue: the reconciliation read surface. While the session
+// is busy (queueProv's
 // blocking pattern, same occupant setup as
 // TestEnqueueBusyQueuesAndDeduplicates), enqueue durably queues a prompt,
 // then GET must report the watermark and exactly the one pending entry
@@ -910,11 +910,10 @@ func TestEnqueueNoSuppliedIDMintsLikeBefore(t *testing.T) {
 
 // TestQueuedEnqueueIdenticalTextDistinctIDsReconcileSeparately is the named
 // regression test this whole feature exists to fix: two prompts enqueued
-// with IDENTICAL text while the session is busy used to be indistinguishable
-// to a client reconciling by text — the exact defect that caused two live
-// consoles incidents (fixed only by narrowing a text matcher, never by an
-// id). Each of the two durable messages must carry its OWN caller-supplied
-// id, not collide or swap.
+// with IDENTICAL text while the session is busy must stay distinguishable
+// to a client reconciling by text, not just by a narrowed text matcher.
+// Each of the two durable messages must carry its OWN caller-supplied id,
+// not collide or swap.
 func TestQueuedEnqueueIdenticalTextDistinctIDsReconcileSeparately(t *testing.T) {
 	prov := &queueProv{
 		name:    "test",

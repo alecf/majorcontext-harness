@@ -447,9 +447,9 @@ func TestGoalPostWhilePromptBusyArmsThenAutoStarts(t *testing.T) {
 	}
 }
 
-// TestDeleteGoalDuringArmedPromptLeavesPromptRunning is the PR #77 review's
-// Finding 1: the 202 "armed" path (handleGoalBusy's register-and-arm branch)
-// creates an active goal while a PLAIN PROMPT still holds the run slot -- in
+// TestDeleteGoalDuringArmedPromptLeavesPromptRunning covers the 202 "armed"
+// path (handleGoalBusy's register-and-arm branch): it creates an active
+// goal while a PLAIN PROMPT still holds the run slot -- in
 // that window sessionState.cancel belongs to the prompt (claimForPrompt set
 // it for the prompt's own claim; no goal loop has started yet). DELETE /goal
 // must clear the goal without cancelling that prompt's context -- cancelling
@@ -590,8 +590,8 @@ func TestClaimForPromptResetsStaleGoalLoop(t *testing.T) {
 	}
 }
 
-// TestGoalToolSetAutoArmsAfterPrompt is the headline user story from
-// docs/plans/2026-07-19-goal-self-adjust.md: a prompt whose scripted tool
+// TestGoalToolSetAutoArmsAfterPrompt is the headline user story for
+// self-adjusting goals: a prompt whose scripted tool
 // call invokes the `goal` session tool's `set` action (registering a goal
 // mid-turn, in-process, no HTTP round-trip); once that prompt finishes, the
 // goal auto-arms and runs to achievement — with no POST /goal at all.

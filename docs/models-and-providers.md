@@ -109,8 +109,8 @@ because the next model resolves its own.
 The registry covers `anthropic`, `openai`, `codex`, `amazon-bedrock`,
 `claude-code`, and `bifrost` refs. The `bifrost` case
 (`modelmeta.bifrostFireworksContextWindows`,
-`modelmeta.bifrostVertexContextWindows`) answers for the boxes fleet's
-openai-compat gateway route, e.g. the fleet default
+`modelmeta.bifrostVertexContextWindows`) answers for a Bifrost deployment's
+openai-compat gateway route, e.g. the default
 `bifrost/fireworks/accounts/fireworks/routers/firerouter` — without it,
 every `bifrost/<vendor>/<path>` ref was a registry miss and refused unless a
 config set `context_window_required: false`.
@@ -152,8 +152,8 @@ like a model swap, needs no migration step:
   gateway (Bifrost) maps it to the upstream provider's own knob. A non-off
   level sends the level string; `EffortOff` sends the literal string `"off"`,
   not an omitted field — several gateway upstreams reason BY DEFAULT when
-  the field is absent, so omitting it cannot express "disabled." Measured
-  (2026-08-12): Fireworks kimi-k3 through Bifrost streamed a full reasoning
+  the field is absent, so omitting it cannot express "disabled." Fireworks
+  kimi-k3 through Bifrost streams a full reasoning
   block (266 chars) with the field absent, and zero reasoning content (0
   chars, 8 vs 133 completion tokens) with the literal `"off"` sent. Only
   `EffortUnset` omits the field, leaving the gateway/model default in force.
@@ -194,7 +194,7 @@ the two providers default differently:
   every pre-effort-control build did (`stripReasoning` in
   `provider/openai/transcode.go`, gated on `req.Effort == EffortOff`). So
   `unset != off` here — do NOT re-fold the openai strip back onto
-  `!Reasoning()`. (Regression: NEP-5272 review of PR #117.) One residual the
+  `!Reasoning()`. One residual the
   off-only strip cannot enforce: a `SetModel` swap to a NON-reasoning openai
   model (gpt-5 -> gpt-4o) at unset effort still replays the stored items — the
   same per-model gating punt the enable direction has, so the caller (a
@@ -261,8 +261,7 @@ enables thinking over that same history — the documented ENABLE-direction
 compaction instead of a live turn.
 
 **The summarization request always ends in a trailing `RoleUser` message,
-never the folded range's own last message verbatim** (2026-08-19 incident,
-session `ses_jumpy-pizza`). `foldEnd` (`Session.Compact`) is the last
+never the folded range's own last message verbatim.** `foldEnd` (`Session.Compact`) is the last
 message before the next KEPT turn's leading `RoleUser` message — ordinarily
 that folded turn's own final assistant reply, `RoleAssistant` — so sending
 `folded` as `req.Messages` verbatim ordinarily ends the wire request in an
@@ -292,27 +291,24 @@ live-only, not journaled, since no compact record exists for a skipped
 fold). Before ever calling the provider, `Compact` also skips a fold range
 whose entire content is a single earlier compaction's own summary message
 (`isLoneExistingSummary`): re-summarizing an already-compressed summary with
-nothing new alongside it has nothing to gain, and was the live incident's
-concrete trigger (a small `keep_turns` landed a fold range dominated by a
-prior summary). Do not conflate this with a REAL summarization failure
+nothing new alongside it has nothing to gain, and can arise from a small
+`keep_turns` landing a fold range dominated by a prior summary. Do not
+conflate this with a REAL summarization failure
 (rate limit, transient 5xx, a truncated stream, a range too large to
 summarize) — those still abort with an error, per §2 "Failure handling" in
 `docs/design/context-compaction.md`.
 
 `CompactResult.SkipReason` names WHICH of the three `TurnsFolded == 0`
 shapes occurred (`SkipReasonNotEnoughTurns`, `SkipReasonLoneExistingSummary`,
-`SkipReasonSummarizerEmpty`) — they used to be wire-identical, which hid two
-real defects (review follow-up on PR #136, Findings A/B/C, fixed before
-merge):
+`SkipReasonSummarizerEmpty`). Distinguishing them matters:
 
-- **Hysteresis must latch on `SkipReasonSummarizerEmpty`, never on the two
-  free skip reasons.** `maybeAutoCompact` only armed its churn-guard
-  hysteresis when `TurnsFolded > 0`. A summarizer that always returns empty
-  therefore never latched it: every subsequent over-threshold turn
-  re-triggered a full, billed summarization call, indefinitely, at full
-  input price — the "free" no-op was actually a recurring-spend bug
-  (Finding A). It now also latches when `SkipReason ==
-  SkipReasonSummarizerEmpty`, since that reason DID cost a call; it must
+- **Hysteresis latches on `SkipReasonSummarizerEmpty`, never on the two
+  free skip reasons.** `maybeAutoCompact` arms its churn-guard hysteresis
+  when `TurnsFolded > 0` or when `SkipReason == SkipReasonSummarizerEmpty`,
+  since that reason DID cost a call: without latching there, a summarizer
+  that always returns empty would re-trigger a full, billed summarization
+  call on every subsequent over-threshold turn, indefinitely, at full
+  input price — a recurring-spend bug, not a free no-op. Hysteresis must
   still NOT latch on `SkipReasonNotEnoughTurns`/`SkipReasonLoneExisting
   Summary` — both are free, and latching there would permanently disarm
   compaction for an over-threshold session that simply lacks enough turns
@@ -321,25 +317,24 @@ merge):
 - **`isLoneExistingSummary` gates on the summary message's `ID`, never on
   `CompactionSummaryBanner`'s text.** The banner is a display convention; a
   user-typed or pasted message that happens to start with the exact banner
-  string is a genuine turn with real content, not a lone existing summary —
-  matching on text alone false-positived on it, skipped it forever without
-  ever calling the provider, and under the automatic trigger the session
-  never compacted again (Finding B). Every compaction summary's `ID` is now
-  minted with the `cmpsum_` prefix (`compactionSummaryIDTag`) instead of the
-  ordinary `msg_` prefix every other message gets, and `isCompactionSummaryID`
-  tests exactly that prefix — a structural, unforgeable marker of
-  compaction origin, the same pattern `message.IsSyntheticOrphanID` already
-  establishes for a different synthetic-message kind. No text-based
-  fallback exists for a summary minted by an earlier pre-fix build of this
-  same PR (still `msg_`-prefixed): the miss is bounded and self-healing —
-  `Compact` just re-summarizes that one old-style range like any other real
-  content, and the fresh summary it produces carries the new ID tag from
-  then on.
+  string is a genuine turn with real content, not a lone existing summary.
+  Matching on text alone would false-positive on it, skip it forever
+  without ever calling the provider, and under the automatic trigger leave
+  the session never compacting again. Every compaction summary's `ID` is
+  minted with the `cmpsum_` prefix (`compactionSummaryIDTag`) rather than
+  the ordinary `msg_` prefix every other message gets, and
+  `isCompactionSummaryID` tests exactly that prefix — a structural,
+  unforgeable marker of compaction origin, the same pattern
+  `message.IsSyntheticOrphanID` already establishes for a different
+  synthetic-message kind. No text-based fallback exists for a summary
+  minted before this ID scheme existed (still `msg_`-prefixed): the miss
+  is bounded and self-healing — `Compact` just re-summarizes that one
+  old-style range like any other real content, and the fresh summary it
+  produces carries the new ID tag from then on.
 - **The `skip_reason` field on `POST /session/{id}/compact`'s response**
   (`compactResponseJSON`, `server/handlers.go`) surfaces
   `CompactResult.SkipReason` directly, `omitempty` (absent on a real fold) —
-  see `docs/design/context-compaction.md` §1 for the wire shape (Finding
-  C).
+  see `docs/design/context-compaction.md` §1 for the wire shape.
 
 ## Session affinity (prompt-cache routing hint)
 
@@ -366,7 +361,7 @@ documents its own affinity hint:
   adapter by swapping in `prompt_cache_key` — that field is specific to
   OpenAI's own API, and the openaicompat adapter targets non-OpenAI
   backends behind a gateway, whose measured path reads `user`. Swapping it
-  would silently drop the measured cache-affinity win. The adapter now sends
+  would silently drop the measured cache-affinity win. The adapter sends
   `prompt_cache_key` ALONGSIDE `user`, set from the same `SessionKey`: a
   gateway fronts several upstream shapes, and an OpenAI-shaped upstream
   behind it reads `prompt_cache_key` while the measured Fireworks path reads
@@ -388,21 +383,22 @@ documents its own affinity hint:
 Both follow the same omit-on-empty rule: a non-empty `SessionKey` sets the
 field; an empty key omits it entirely, never an empty string.
 `provider/anthropic` ignores `SessionKey` — it already uses explicit
-`cache_control` markers, so a routing hint would add nothing; a live probe
-through Bifrost (2026-08-12) confirmed a 41k-token cache write followed by a
-41k-token cache read on the very next turn with no `SessionKey` involved.
+`cache_control` markers, so a routing hint would add nothing: a cache write
+on one turn has been observed to be followed by a same-size cache read on
+the very next turn with no `SessionKey` involved.
 
-The reason `SessionKey` exists at all is measured, not theoretical: Fireworks
+The reason `SessionKey` exists at all is observed, not theoretical: Fireworks
 serverless prompt caching is prefix-based, automatic, and PER-REPLICA.
 Without a routing hint, a re-sent request can land on a different replica
-and miss its own prefix cache. A live probe through Bifrost (2026-08-12)
-sent a byte-identical 150k-token prompt twice: with no `user` field, the
-second call still read `cached_tokens=0` at 10.8s time-to-first-token; with
-a stable `user` field, the second call read `cached_tokens=150,300` at 2.8s
-time-to-first-token, through the same gateway. Stateless routes re-send the
-whole history every request, so a long session on the openaicompat route (a
-gateway to Fireworks kimi-k3 and similar models) pays full prefill on nearly
-every turn without this hint.
+and miss its own prefix cache. A byte-identical large prompt sent twice
+through a gateway has been observed to show the effect directly: with no
+`user` field, the second call still reads a fully uncached prompt with a
+markedly slower time-to-first-token; with a stable `user` field, the second
+call reads a fully cached prompt with a markedly faster time-to-first-token,
+through the same gateway. Stateless routes re-send the whole history every
+request, so a long session on the openaicompat route (a gateway to
+Fireworks kimi-k3 and similar models) pays full prefill on nearly every
+turn without this hint.
 
 ## Codex WebSocket response chaining
 
@@ -544,8 +540,7 @@ A 5m expiry on a mature session, by contrast, rewrites the WHOLE prefix —
 the entire history, at full input price. One such miss costs more than the
 1h write premium over hundreds of turns. Agentic sessions exceed 5 minutes
 by construction: one build, one live probe, or one subagent runs longer than
-the window, and a user reads an answer before sending the next turn. The
-commit that introduced this default carries the measured evidence.
+the window, and a user reads an answer before sending the next turn.
 
 ## A second native Responses provider
 

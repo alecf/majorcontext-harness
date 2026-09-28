@@ -502,11 +502,11 @@ func TestHealthNoAuth(t *testing.T) {
 	}
 }
 
-// TestHealthReportsVCSInfo guards against the incident where an engineer
-// burned 30 minutes suspecting a stale box binary because /health only ever
-// echoed the config version (0.1.0-dev) with no way to tell which commit was
-// actually running. /health must additionally surface vcs_revision and
-// vcs_time from runtime/debug.ReadBuildInfo — present as empty strings
+// TestHealthReportsVCSInfo guards against /health being unable to tell which
+// commit is actually running: echoing only the config version (0.1.0-dev)
+// leaves no way to distinguish a stale binary from a fresh one. /health must
+// additionally surface vcs_revision and vcs_time from
+// runtime/debug.ReadBuildInfo — present as empty strings
 // (never omitted) when build info carries no VCS settings, e.g. a go test
 // binary, which is exactly what this test runs as.
 func TestHealthReportsVCSInfo(t *testing.T) {
@@ -1061,7 +1061,7 @@ func TestSessionFilter(t *testing.T) {
 }
 
 // TestConcurrentPromptConflict pins the queue-on-busy contract that replaced
-// the old 409 (docs/plans/2026-07-19-prompt-queue.md, invariant 9): a
+// the old 409: a
 // prompt_async against a session already busy with another prompt is
 // durably ENQUEUED and 202'd, not rejected. The response names it "queued"
 // with the current depth, and GET /session mirrors that depth.
@@ -2282,8 +2282,8 @@ func TestClaimForPromptSurvivesEvictionRace(t *testing.T) {
 	}
 
 	// A concurrent prompt on the running A must be a clean durable enqueue,
-	// not a second claim that could diverge state (docs/plans/2026-07-19-
-	// prompt-queue.md replaced the old 409 here with queue-on-busy).
+	// not a second claim that could diverge state (queue-on-busy replaced
+	// the old 409 here).
 	resp, data = h.do("POST", "/session/"+idA+"/prompt_async", map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": "again"}},
 	})

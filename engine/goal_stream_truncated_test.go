@@ -16,20 +16,20 @@ import (
 // truncatedProviderErr builds the error shape every provider adapter now
 // returns when a response stream dies before its terminal event (see
 // provider.MarkStreamTruncated and the adapters' stream-read boundaries):
-// the 2026-08-06 nimble-pizza incident's failure, where a gateway cut
-// streams at a ~111s ceiling with HTTP 200 already sent.
+// a gateway can cut a stream at a ~111s ceiling with HTTP 200 already
+// sent.
 func truncatedProviderErr() error {
 	return provider.MarkStreamTruncated(io.EOF)
 }
 
 // TestPursueGoalStreamTruncatedShortBackoffThenRecovers is the red-first
 // test for the goal-loop half of the truncation fix: a worker-turn error
-// classified RetryableStreamTruncated must be retried — the incident's two
-// truncations were followed by a fast, clean success minutes later — but on
-// the SHORT deterministic-tier schedule (goalRetryDelay: 1s, 4s, ...), not
-// the retryable tier's 5s→5min weather schedule: a stream ceiling is not
+// classified RetryableStreamTruncated must be retried on the SHORT
+// deterministic-tier schedule (goalRetryDelay: 1s, 4s, ...), not the
+// retryable tier's 5s→5min weather schedule: a stream ceiling is not
 // weather, waiting longer does not raise it, and each doomed attempt is
-// expensive (a full re-prompt), so the budget must stay small.
+// expensive (a full re-prompt), so the budget must stay small. A
+// truncated stream can recover with a fast, clean success shortly after.
 func TestPursueGoalStreamTruncatedShortBackoffThenRecovers(t *testing.T) {
 	orig := goalJitterFunc
 	t.Cleanup(func() { goalJitterFunc = orig })
@@ -95,11 +95,11 @@ func TestPursueGoalStreamTruncatedShortBackoffThenRecovers(t *testing.T) {
 
 // TestPursueGoalStreamTruncatedBudgetExhaustedParks: a stream that
 // truncates on every attempt must exhaust goalStreamTruncatedMaxAttempts —
-// not the deterministic tier's goalWorkerRetries+1 (the incident's actual
-// bug: parked after ~5s), and not the retryable tier's 12-attempt/~30min
-// budget (12 full re-prompts of a >100s turn at Opus rates) — and then
-// PARK, exactly like every other exhaustion tier: goal still active,
-// goal.parked journaled, IsGoalWorkerParked sentinel returned.
+// not the deterministic tier's goalWorkerRetries+1 (which would park
+// after ~5s), and not the retryable tier's 12-attempt/~30min budget (12
+// full re-prompts of a >100s turn at Opus rates) — and then PARK, exactly
+// like every other exhaustion tier: goal still active, goal.parked
+// journaled, IsGoalWorkerParked sentinel returned.
 func TestPursueGoalStreamTruncatedBudgetExhaustedParks(t *testing.T) {
 	orig := goalJitterFunc
 	t.Cleanup(func() { goalJitterFunc = orig })
@@ -448,10 +448,10 @@ func TestCompactTruncatedSummaryNeverFolds(t *testing.T) {
 // must guard the EVALUATOR's stream too, not just worker turns — a
 // permanently silent evaluator stream otherwise wedges PursueGoal forever
 // while holding the server's run slot: no goal.eval_failed, no turn.end,
-// and the prompt queue never drains (review finding on the watchdog work;
-// strictly worse than the wedge the watchdog exists to bound). Here eval
-// call 1 hangs forever; the watchdog cuts it at the default 5m, the
-// in-boundary retry consumes the scripted verdict, and the goal achieves.
+// and the prompt queue never drains — strictly worse than the wedge the
+// watchdog exists to bound. Here eval call 1 hangs forever; the watchdog
+// cuts it at the default 5m, the in-boundary retry consumes the scripted
+// verdict, and the goal achieves.
 func TestGoalEvaluatorHangingStreamCutByWatchdog(t *testing.T) {
 	orig := goalJitterFunc
 	t.Cleanup(func() { goalJitterFunc = orig })

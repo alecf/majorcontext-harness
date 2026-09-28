@@ -70,7 +70,7 @@ func TestTranscriptSeqs_ParallelToMessages(t *testing.T) {
 // from the ?stream_from=1 envelope and feeds it to the REAL before_seq/
 // limit page endpoint (GET /session/{id}/message?before_seq=N&limit=K,
 // server/handlers.go's handleMessagePage -> engine.ReadMessagePage), the
-// exact use meetneptune/boxes's console pane makes of it
+// exact use majorcontext/bailey's console pane makes of it
 // (docs/design/transcript-tail-seqs.md, transcript-window.ts's
 // loadTranscriptTail).
 //
@@ -219,7 +219,7 @@ func TestTranscriptSeqs_PagesAdjacentAcrossCompaction(t *testing.T) {
 		compactAsstTurn("SUMMARY of turns 1-2", provider.Usage{InputTokens: 5}),
 	}})
 
-	id := "ses_5292000000000199"
+	id := "ses_6100000000000199"
 	fixture := `{"type":"session","id":"` + id + `","created_at":"2025-01-02T03:04:05Z"}
 {"type":"message","message":{"id":"msg_1","role":"user","parts":[{"type":"text","text":"task 1"}]}}
 {"type":"message","message":{"id":"msg_2","role":"assistant","parts":[{"type":"text","text":"reply 1"}]}}

@@ -838,11 +838,10 @@ func runCmd(args []string) error {
 	lateAPI.Bind(newLazyRunClientAPI(func() *engine.Session { return sess }))
 
 	// sessMgr enables the `task` tool for `harness run` too, not only
-	// `harness serve` — docs/plans/2026-08-23-subagent-sessions-design.md.
-	// A single-shot run's tree lives and dies with this one process; unlike
-	// serveCmd there is no separate wire surface to register children
-	// against, so AdoptReloaded below (right after resolveSession) is the
-	// only registration point this mode needs.
+	// `harness serve`. A single-shot run's tree lives and dies with this one
+	// process; unlike serveCmd there is no separate wire surface to register
+	// children against, so AdoptReloaded below (right after resolveSession)
+	// is the only registration point this mode needs.
 	sessMgr := engine.NewSessionManager(ctx, envInt("HARNESS_MAX_TASK_DEPTH"), envInt("HARNESS_MAX_CONCURRENT_TASKS"))
 	// SetMaxTreeTokens is opt-in. A zero value disables the check.
 	sessMgr.SetMaxTreeTokens(envInt("HARNESS_MAX_TREE_TOKENS"))
@@ -1696,9 +1695,9 @@ func serveCmd(args []string) error {
 	}
 	taskEvents := newTaskEventLogger(logger)
 	var srv *server.Server
-	// sessMgr enables the `task` tool on every served session
-	// (docs/plans/2026-08-23-subagent-sessions-design.md). Built HERE, as a
-	// plain local value, rather than read back later via srv.SessionManager()
+	// sessMgr enables the `task` tool on every served session. Built HERE,
+	// as a plain local value, rather than read back later via
+	// srv.SessionManager()
 	// — mkCfg's closures already reference srv itself before it's assigned
 	// (see OnEvent just below), which is safe ONLY because Publish is never
 	// invoked until an event actually fires, long after srv is assigned. A
@@ -2251,11 +2250,10 @@ func baseBehaviorGuidance() string {
 // engine state. The tag strings come from the message package so the prompt
 // and the wire rendering never drift.
 //
-// Without this, a live box agent flagged the "[engine: ...]" block as
-// unverified on nearly every turn and derailed simple questions; the earlier
-// stopgap told the model to trust ANY bracketed line, which a pasted payload
-// containing "[engine: ...]" could spoof. This keys trust on the unforgeable
-// sentinel instead.
+// Without this, the model can flag the "[engine: ...]" block as unverified
+// and derail a simple turn on it; a rule that instead trusts ANY bracketed
+// line is spoofable by a pasted payload containing "[engine: ...]". This
+// keys trust on the unforgeable sentinel instead.
 func ambientContextGuidance() string {
 	return "The harness engine appends its own live status to the end of your " +
 		"newest user message each turn: engine identity, running processes, " +

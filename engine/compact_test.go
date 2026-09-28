@@ -320,8 +320,9 @@ func TestHistoryAndCommandsOneSnapshot(t *testing.T) {
 	}
 }
 
-// TestCompactPreservesRetainedResultsIndex is review finding F3(a)'s red
-// test. The retention ceiling (Config.ToolResultRetainedBytes) is monotonic
+// TestCompactPreservesRetainedResultsIndex is a red-first regression test
+// for handle orphaning under compaction. The retention ceiling
+// (Config.ToolResultRetainedBytes) is monotonic
 // — only ever incremented, nothing evicts or reclaims it — and
 // compactionSystemPrompt forbids the summarizer from transcribing tool
 // output, so a fold that swallows a preview line carrying a trh_N handle
@@ -411,8 +412,8 @@ func TestCompactRetainedResultsIndexOmittedWhenNoHandles(t *testing.T) {
 	}
 }
 
-// TestRetainedResultsIndexCapped is review finding N8's red test:
-// unbounded, 200 handles measured at roughly 6.9k tokens of index text —
+// TestRetainedResultsIndexCapped is a red-first regression test: left
+// unbounded, 200 handles measure at roughly 6.9k tokens of index text —
 // with the retention ceiling disabled (Config.ToolResultRetainedBytes <= 0)
 // a long session can mint arbitrarily many. The index must list only the
 // newest retainedResultsIndexMaxHandles and name the rest by COUNT only.
@@ -456,7 +457,7 @@ func TestRetainedResultsIndexCapped(t *testing.T) {
 	}
 }
 
-// TestRetainedResultsIndexNotesMissingSidecar is review finding N9's red
+// TestRetainedResultsIndexNotesMissingSidecar is a red-first regression
 // test: the index must not assert "still readable" for a handle whose
 // sidecar file is gone (an operator wiped toolresults/, a volume rolled
 // back) — it must check, not assume.
@@ -505,12 +506,13 @@ func TestRetainedResultsIndexNotesMissingSidecar(t *testing.T) {
 }
 
 // TestCompactSummaryRequestAlwaysEndsInUserRole is the red-first test for
-// the 2026-08-19 live incident (session ses_jumpy-pizza, model
-// anthropic/anthropic/claude-fable-5): compacting with keep_turns=20
-// returned `{"error":"[permanent] anthropic: This model does not support
+// a compaction failure shape: compacting with a fold boundary that lands on
+// an ordinary completed turn returns
+// `{"error":"[permanent] anthropic: This model does not support
 // assistant message prefill. The conversation must end with a user
-// message. (invalid_request_error, HTTP 400)"}` while keep_turns=8 on the
-// SAME session succeeded. Root cause: foldEnd (Compact's fold range) is the
+// message. (invalid_request_error, HTTP 400)"}`, while a different
+// keep_turns on the same session that lands the boundary elsewhere
+// succeeds. Root cause: foldEnd (Compact's fold range) is the
 // last message before the next KEPT turn's leading RoleUser message —
 // ordinarily that folded turn's own final assistant reply, RoleAssistant —
 // and the old code sent `folded` as req.Messages verbatim, with no trailing
@@ -556,9 +558,9 @@ func TestCompactSummaryRequestAlwaysEndsInUserRole(t *testing.T) {
 // compactionRequestMessages itself, covering every role the folded range's
 // own last message can plausibly carry (RoleAssistant — the ordinary
 // completed-turn case; RoleTool — a message.ResolveOrphanToolCalls
-// synthetic repair left by an interrupted tool call, the shape that
-// happened to mask this bug on keep_turns=8 in the live incident; RoleUser
-// — folding a range that is itself already a prior compaction summary):
+// synthetic repair left by an interrupted tool call, a shape that can mask
+// this bug at a low keep_turns value; RoleUser — folding a range that is
+// itself already a prior compaction summary):
 // every case must produce a request ending in RoleUser.
 func TestCompactionRequestMessagesAlwaysEndsInUser(t *testing.T) {
 	for _, tc := range []struct {
@@ -678,7 +680,7 @@ func TestCompactNoopWhenNotEnoughTurns(t *testing.T) {
 		t.Errorf("TurnsFolded = %d, want 0", res.TurnsFolded)
 	}
 	if res.SkipReason != SkipReasonNotEnoughTurns {
-		t.Errorf("SkipReason = %q, want %q (review follow-up on PR #136, Finding A/C)", res.SkipReason, SkipReasonNotEnoughTurns)
+		t.Errorf("SkipReason = %q, want %q", res.SkipReason, SkipReasonNotEnoughTurns)
 	}
 	if got, ok := s.ContextReading(); !ok || got != wantUsage {
 		t.Errorf("ContextReading after a no-progress skip = (%+v, %v), want (%+v, true): nothing folded, so the retained measurement must stand unchanged", got, ok, wantUsage)
@@ -912,10 +914,9 @@ func TestCompactFailureNoJournalNoMutation(t *testing.T) {
 	}
 }
 
-// TestCompactEmptySummarySkipsGracefully is the red-first test for the
-// 2026-08-19 live incident (session ses_jumpy-pizza): a follow-up compact
-// with keep_turns=2 (fold range dominated by a prior compaction summary
-// plus a couple of real turns) returned
+// TestCompactEmptySummarySkipsGracefully is the red-first test for a
+// follow-up compact with keep_turns=2 (fold range dominated by a prior
+// compaction summary plus a couple of real turns) that returns
 // `{"error":"engine: compaction summary was empty"}` — a summarization
 // call that completed without a transport/stream error, but produced no
 // usable text, was treated identically to a hard failure and surfaced as
@@ -932,7 +933,7 @@ func TestCompactEmptySummarySkipsGracefully(t *testing.T) {
 		// The model returns nothing, but the call still cost real,
 		// distinguishable tokens (777/3, chosen to be unmistakable against
 		// the ordinary turns' usage above) — see the usage-accounting
-		// assertion below (review follow-up on PR #136, Finding A).
+		// assertion below.
 		compactSummaryTurn("", provider.Usage{InputTokens: 777, OutputTokens: 3}),
 	}}
 	dir := t.TempDir()
@@ -958,15 +959,15 @@ func TestCompactEmptySummarySkipsGracefully(t *testing.T) {
 		t.Errorf("TurnsFolded = %d, want 0", res.TurnsFolded)
 	}
 	if res.SkipReason != SkipReasonSummarizerEmpty {
-		t.Errorf("SkipReason = %q, want %q (review follow-up on PR #136, Finding A/C)", res.SkipReason, SkipReasonSummarizerEmpty)
+		t.Errorf("SkipReason = %q, want %q", res.SkipReason, SkipReasonSummarizerEmpty)
 	}
 	if got, ok := s.ContextReading(); !ok || got != wantLastUsage {
 		t.Errorf("ContextReading after a summarizer-empty skip = (%+v, %v), want (%+v, true): nothing folded, so the retained measurement must stand unchanged", got, ok, wantLastUsage)
 	}
 
 	// The empty-summary call still cost real tokens and must not vanish
-	// from Session.Usage() (review follow-up on PR #136, Finding A: this
-	// path used to drop the summarizer call's usage entirely).
+	// from Session.Usage(): a summarizer-empty skip must still account for
+	// the summarizer call's own usage.
 	afterUsage := s.Usage()
 	if got := afterUsage.InputTokens - beforeUsage.InputTokens; got != 777 {
 		t.Errorf("InputTokens delta = %d, want 777 (the empty summarizer call's own usage must still be accounted)", got)
@@ -1015,9 +1016,9 @@ func TestCompactEmptySummarySkipsGracefully(t *testing.T) {
 // already-compressed summary with nothing new to fold in has nothing to
 // gain, the same "nothing worth folding" case §2's minimum-fold rule
 // already covers for too-few-turns. This is the cheap, structural half of
-// the empty-summary incident's root cause (a small keep_turns landing a
-// fold range dominated by a prior summary); the graceful-skip fix above
-// covers every other reason the model might return nothing.
+// the empty-summary case (a small keep_turns landing a fold range
+// dominated by a prior summary); the graceful-skip handling above covers
+// every other reason the model might return nothing.
 func TestCompactSkipsLoneExistingSummaryRangeWithoutCallingProvider(t *testing.T) {
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
 		compactTurn("one", provider.Usage{InputTokens: 10}),
@@ -1051,7 +1052,7 @@ func TestCompactSkipsLoneExistingSummaryRangeWithoutCallingProvider(t *testing.T
 		t.Errorf("TurnsFolded = %d, want 0 (lone existing-summary range, nothing to gain)", res.TurnsFolded)
 	}
 	if res.SkipReason != SkipReasonLoneExistingSummary {
-		t.Errorf("SkipReason = %q, want %q (review follow-up on PR #136, Finding A/C)", res.SkipReason, SkipReasonLoneExistingSummary)
+		t.Errorf("SkipReason = %q, want %q", res.SkipReason, SkipReasonLoneExistingSummary)
 	}
 	if got, ok := s.ContextReading(); !ok || got != wantUsage {
 		t.Errorf("ContextReading after a lone-existing-summary skip = (%+v, %v), want (%+v, true): nothing folded, so the retained measurement must stand unchanged", got, ok, wantUsage)
@@ -1062,17 +1063,17 @@ func TestCompactSkipsLoneExistingSummaryRangeWithoutCallingProvider(t *testing.T
 }
 
 // TestCompactUserMessageStartingWithBannerTextStillFolds is the red-first
-// test for the review follow-up on PR #136, Finding B: isLoneExistingSummary
-// used to match on CompactionSummaryBanner's TEXT alone (RoleUser +
-// strings.HasPrefix), which a user-typed or pasted message can trivially
-// collide with — e.g. pasting a transcript that itself contains an earlier
-// compaction summary. A false match skips that range FOREVER without ever
-// calling the provider; under the automatic trigger the session then never
-// compacts again, the exact exhaustion mode this PR exists to fix, just
-// reached via message content instead of a summarizer bug.
-// isLoneExistingSummary must gate on isCompactionSummaryID's structural ID
-// marker instead, so a genuine user message with real content to fold is
-// never mistaken for a lone existing summary.
+// test proving isLoneExistingSummary does not match on
+// CompactionSummaryBanner's TEXT alone (RoleUser + strings.HasPrefix),
+// which a user-typed or pasted message can trivially collide with — e.g.
+// pasting a transcript that itself contains an earlier compaction
+// summary. A false match would skip that range FOREVER without ever
+// calling the provider; under the automatic trigger the session would
+// then never compact again — the same exhaustion mode a broken summarizer
+// causes, reached instead via ordinary message content.
+// isLoneExistingSummary gates on isCompactionSummaryID's structural ID
+// marker, so a genuine user message with real content to fold is never
+// mistaken for a lone existing summary.
 func TestCompactUserMessageStartingWithBannerTextStillFolds(t *testing.T) {
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
 		compactSummaryTurn("real gist of the pasted message", provider.Usage{InputTokens: 5}),
@@ -1679,12 +1680,13 @@ func TestCompactCorruptRangeIsLoadError(t *testing.T) {
 	}
 }
 
-// nep5292FixtureLines is the exact reproduction journal from NEP-5292: three
+// orphanFoldFixtureLines is the exact reproduction journal for the orphan-fold
+// boundary fix: three
 // turns, the first turn's assistant message carrying a tool_call ("A") with
 // no matching tool_result — the orphan message.ResolveOrphanToolCalls
 // repairs at every LoadSession, in memory only. With keepTurns=2 the fold
 // boundary lands exactly on that in-memory-only synthetic message.
-const nep5292FixtureLines = `{"type":"message","message":{"id":"msg_1","role":"user","parts":[{"type":"text","text":"task 1"}]}}
+const orphanFoldFixtureLines = `{"type":"message","message":{"id":"msg_1","role":"user","parts":[{"type":"text","text":"task 1"}]}}
 {"type":"message","message":{"id":"msg_2","role":"assistant","parts":[{"type":"tool_call","call_id":"A","name":"bash","arguments":{}}]}}
 {"type":"message","message":{"id":"msg_3","role":"user","parts":[{"type":"text","text":"task 2"}]}}
 {"type":"message","message":{"id":"msg_4","role":"assistant","parts":[{"type":"text","text":"done"}]}}
@@ -1692,23 +1694,23 @@ const nep5292FixtureLines = `{"type":"message","message":{"id":"msg_1","role":"u
 {"type":"message","message":{"id":"msg_6","role":"assistant","parts":[{"type":"text","text":"done"}]}}
 `
 
-// writeNEP5292Fixture writes the reproduction journal above under id, with a
+// writeOrphanFoldFixture writes the reproduction journal above under id, with a
 // session header line so it satisfies every other reader's expectations too.
-func writeNEP5292Fixture(t *testing.T, dir, id string) {
+func writeOrphanFoldFixture(t *testing.T, dir, id string) {
 	t.Helper()
 	data := `{"type":"session","id":"` + id + `","created_at":"2025-01-02T03:04:05Z"}
-` + nep5292FixtureLines
+` + orphanFoldFixtureLines
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// nep5292RawHistory is the exact message.Message values nep5292FixtureLines
+// orphanFoldRawHistory is the exact message.Message values orphanFoldFixtureLines
 // encodes, built directly (not by parsing JSON) for tests that need to feed
 // them to spliceCompact without going through LoadSession at all — this is
 // what ANY binary's scan loop, old or new, sees before
 // message.ResolveOrphanToolCalls ever runs.
-func nep5292RawHistory() []message.Message {
+func orphanFoldRawHistory() []message.Message {
 	return []message.Message{
 		{ID: "msg_1", Role: message.RoleUser, Parts: message.Parts{&message.Text{Text: "task 1"}}},
 		{ID: "msg_2", Role: message.RoleAssistant, Parts: message.Parts{&message.ToolCall{CallID: "A", Name: "bash", Arguments: json.RawMessage("{}")}}},
@@ -1720,7 +1722,8 @@ func nep5292RawHistory() []message.Message {
 }
 
 // TestCompactNeverJournalsSyntheticOrphanID is the red-first test for Part A
-// of NEP-5292's fix: Session.Compact must never persist a fold boundary ID
+// of the orphan-fold-boundary fix: Session.Compact must never persist a
+// fold boundary ID
 // that names a message.ResolveOrphanToolCalls synthetic repair message —
 // that message exists only in this process's live memory (see
 // engine/store.go's LoadSession, which applies the repair AFTER replay) and
@@ -1728,7 +1731,7 @@ func nep5292RawHistory() []message.Message {
 // arrival: no future LoadSession will ever find it.
 //
 // It reproduces the exact mechanism from the issue: loading
-// nep5292FixtureLines leaves an orphaned tool_call at msg_2, which
+// orphanFoldFixtureLines leaves an orphaned tool_call at msg_2, which
 // LoadSession's ResolveOrphanToolCalls repair turns into a synthetic
 // RoleTool message at live history index 2. A keepTurns=2 compact folds
 // exactly turn 1 (indices 0-2), so the naive fold-end id would be that
@@ -1738,8 +1741,8 @@ func nep5292RawHistory() []message.Message {
 // process already has.
 func TestCompactNeverJournalsSyntheticOrphanID(t *testing.T) {
 	dir := t.TempDir()
-	id := "ses_5292000000000001"
-	writeNEP5292Fixture(t, dir, id)
+	id := "ses_6100000000000001"
+	writeOrphanFoldFixture(t, dir, id)
 
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
 		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 5}),
@@ -1825,7 +1828,8 @@ func TestCompactNeverJournalsSyntheticOrphanID(t *testing.T) {
 }
 
 // TestCompactNewRecordReplaysIdenticallyWithoutHealPath is the version-skew
-// half of NEP-5292's fix: an OLD binary — one with no heal path at all,
+// half of the orphan-fold-boundary fix: an OLD binary — one with no heal
+// path at all,
 // calling spliceCompact directly and never message.IsSyntheticOrphanID —
 // must still replay a compact record written by the FIXED Compact
 // correctly. This is what makes downgrading to an old binary after this fix
@@ -1847,8 +1851,8 @@ func TestCompactNeverJournalsSyntheticOrphanID(t *testing.T) {
 // does, and use ITS FirstID/LastID/Summary.
 func TestCompactNewRecordReplaysIdenticallyWithoutHealPath(t *testing.T) {
 	dir := t.TempDir()
-	id := "ses_5292000000000003"
-	writeNEP5292Fixture(t, dir, id)
+	id := "ses_6100000000000003"
+	writeOrphanFoldFixture(t, dir, id)
 
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
 		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 5}),
@@ -1887,7 +1891,7 @@ func TestCompactNewRecordReplaysIdenticallyWithoutHealPath(t *testing.T) {
 	// pre-compact history, using the journaled ids/summary verbatim (read
 	// from disk above, not from CompactResult), no heal function ever
 	// called or even in scope.
-	oldSpliced, err := spliceCompact(nep5292RawHistory(), last.Compact.FirstID, last.Compact.LastID, last.Compact.Summary)
+	oldSpliced, err := spliceCompact(orphanFoldRawHistory(), last.Compact.FirstID, last.Compact.LastID, last.Compact.Summary)
 	if err != nil {
 		t.Fatalf("old-binary-equivalent spliceCompact = %v, want success (on-disk LastID must be a real, persisted id an old binary can find)", err)
 	}
@@ -1906,7 +1910,8 @@ func TestCompactNewRecordReplaysIdenticallyWithoutHealPath(t *testing.T) {
 }
 
 // TestLoadSessionHealsPhantomSyntheticCompactLastID is the red-first test
-// for Part B of NEP-5292's fix: a journal ALREADY containing a phantom
+// for Part B of the orphan-fold-boundary fix: a journal ALREADY containing
+// a phantom
 // synthetic LastID (written by an unpatched build, before Part A existed)
 // must still load — LoadSession re-derives the fold end from FirstID plus
 // the record's own turns_folded count instead of failing outright. The
@@ -1915,9 +1920,9 @@ func TestCompactNewRecordReplaysIdenticallyWithoutHealPath(t *testing.T) {
 // (already fixed) live path would now produce.
 func TestLoadSessionHealsPhantomSyntheticCompactLastID(t *testing.T) {
 	dir := t.TempDir()
-	id := "ses_5292000000000002"
+	id := "ses_6100000000000002"
 	data := `{"type":"session","id":"` + id + `","created_at":"2025-01-02T03:04:05Z"}
-` + nep5292FixtureLines +
+` + orphanFoldFixtureLines +
 		`{"type":"compact","compact":{"first_id":"msg_1","last_id":"synthetic-orphan-tool-result-1-A","turns_folded":1,"summary":{"id":"msg_summary","role":"user","parts":[{"type":"text","text":"[compacted summary of earlier conversation]\n\nthe gist"}]}}}
 `
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o644); err != nil {
@@ -1953,9 +1958,9 @@ func TestLoadSessionHealsPhantomSyntheticCompactLastID(t *testing.T) {
 // range already does (see TestCompactCorruptRangeIsLoadError).
 func TestLoadSessionCompactPhantomLastIDFailsLoudlyWhenUnhealable(t *testing.T) {
 	dir := t.TempDir()
-	id := "ses_5292000000000004"
+	id := "ses_6100000000000004"
 	data := `{"type":"session","id":"` + id + `","created_at":"2025-01-02T03:04:05Z"}
-` + nep5292FixtureLines +
+` + orphanFoldFixtureLines +
 		`{"type":"compact","compact":{"first_id":"msg_does_not_exist","last_id":"synthetic-orphan-tool-result-1-A","turns_folded":1,"summary":{"id":"msg_summary","role":"user","parts":[{"type":"text","text":"x"}]}}}
 `
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(data), 0o644); err != nil {
@@ -2003,14 +2008,15 @@ func TestMaybeAutoCompactTriggersAndHysteresisPreventsThrash(t *testing.T) {
 }
 
 // TestMaybeAutoCompactEmptySummaryLatchesHysteresis is the red-first test
-// for the review follow-up on PR #136, Finding A: the empty-summary no-op
-// costs a full, billed provider call but used to set no hysteresis (only
-// TurnsFolded > 0 latched it). Once auto-compaction is armed, a session
-// whose summarizer returns empty re-issued a full summarization call, at
-// full input price, on EVERY subsequent over-threshold turn, indefinitely —
-// a silent recurring-spend bug, not a free no-op. The fix: latch the churn
-// guard on SkipReasonSummarizerEmpty too, so the second over-threshold turn
-// after an empty-summary skip must NOT issue another summarization call.
+// proving the empty-summary no-op latches hysteresis even though it costs
+// a full, billed provider call (only TurnsFolded > 0 alone would miss
+// it). Without this, once auto-compaction is armed, a session whose
+// summarizer returns empty would re-issue a full summarization call, at
+// full input price, on EVERY subsequent over-threshold turn, indefinitely
+// — a silent recurring-spend bug, not a free no-op. The churn guard
+// latches on SkipReasonSummarizerEmpty too, so the second over-threshold
+// turn after an empty-summary skip must NOT issue another summarization
+// call.
 func TestMaybeAutoCompactEmptySummaryLatchesHysteresis(t *testing.T) {
 	over := provider.Usage{InputTokens: 900}
 	under := provider.Usage{InputTokens: 100}
@@ -2038,7 +2044,7 @@ func TestMaybeAutoCompactEmptySummaryLatchesHysteresis(t *testing.T) {
 		}
 	}
 	if summaryCalls != 1 {
-		t.Errorf("summarization calls = %d, want 1 (an empty-summary no-op must latch hysteresis so a still-over-threshold turn never re-triggers it — review follow-up on PR #136, Finding A)", summaryCalls)
+		t.Errorf("summarization calls = %d, want 1 (an empty-summary no-op must latch hysteresis so a still-over-threshold turn never re-triggers it)", summaryCalls)
 	}
 	if got := s.CompactionCount(); got != 0 {
 		t.Errorf("CompactionCount = %d, want 0 (the summarizer never returned anything usable in this test)", got)
@@ -2068,45 +2074,46 @@ func TestMaybeAutoCompactDisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestIncidentRecoverableByCompaction is the red-first regression test for
-// the production incident: a goal session died at 205102 tokens > 200000
-// maximum ("invalid_request_error: prompt is too long") and was
-// unrecoverable afterward. With ContextWindowTokens configured, the
-// automatic trigger must fold history BEFORE the next request would repeat
-// that identical, deterministic failure — turning the incident's shape into
-// a recoverable one instead of a dead session.
+// TestIncidentRecoverableByCompaction is the red-first regression test
+// proving a session that reaches an over-window input-token count
+// (205102 tokens against a 200000 maximum, the shape of an
+// "invalid_request_error: prompt is too long" rejection) recovers instead
+// of dying permanently. With ContextWindowTokens configured, the
+// automatic trigger must fold history BEFORE the next request would
+// repeat that identical, deterministic failure.
 func TestIncidentRecoverableByCompaction(t *testing.T) {
-	// Three prior worker turns, the last one landing at the incident's exact
-	// input-token count, followed by the automatic compaction's own
-	// summarization call, then a worker turn that must now succeed instead
-	// of repeating the "prompt is too long" failure.
+	// Three prior worker turns, the last one landing at the over-window
+	// input-token count exercised below, followed by the automatic
+	// compaction's own summarization call, then a worker turn that must now
+	// succeed rather than repeating the "prompt is too long" failure.
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
 		compactTurn("t1", provider.Usage{InputTokens: 50_000, OutputTokens: 500}),
 		compactTurn("t2", provider.Usage{InputTokens: 120_000, OutputTokens: 500}),
-		compactTurn("t3", provider.Usage{InputTokens: 205_102, OutputTokens: 500}), // the incident's exact figure
+		compactTurn("t3", provider.Usage{InputTokens: 205_102, OutputTokens: 500}), // exceeds the configured window
 		compactSummaryTurn("summary of the first two turns", provider.Usage{InputTokens: 4_000, OutputTokens: 200}),
 		compactTurn("t4", provider.Usage{InputTokens: 30_000, OutputTokens: 500}), // succeeds: history was trimmed first
 	}}
 	s := NewSession(Config{
 		Providers:           provider.Registry{"test": prov},
 		Model:               message.ModelRef{Provider: "test", Model: "m1"},
-		ContextWindowTokens: 200_000, // the incident's exact maximum
+		ContextWindowTokens: 200_000, // the maximum t3's usage exceeds
 		CompactionKeepTurns: 1,
 	})
 	runTurns(t, s, 3)
 
 	last, ok := s.LastUsage()
 	if !ok || last.InputTokens != 205_102 {
-		t.Fatalf("LastUsage = %+v (ok=%v), want the incident's 205102 input tokens", last, ok)
+		t.Fatalf("LastUsage = %+v (ok=%v), want 205102 input tokens", last, ok)
 	}
 	if got := s.CompactionCount(); got != 0 {
 		t.Fatalf("CompactionCount = %d before the 4th call, want 0", got)
 	}
 
-	// Pre-fix, this 4th call would resend the full, now-over-limit history
-	// and die identically ("prompt is too long"). Post-fix, maybeAutoCompact
-	// folds the oldest turns first, so the request this turn actually sends
-	// is far smaller — the incident's exact failure mode never recurs.
+	// Without automatic compaction, this 4th call would resend the full,
+	// now-over-limit history and die identically ("prompt is too long").
+	// With it, maybeAutoCompact folds the oldest turns first, so the
+	// request this turn actually sends is far smaller — the same failure
+	// mode never recurs.
 	if _, err := s.Prompt(context.Background(), "keep going"); err != nil {
 		t.Fatalf("Prompt on a session over the context-window threshold: %v (must be recoverable by compaction, not fatal)", err)
 	}
@@ -2217,11 +2224,11 @@ func seedDelegatedTurn(s *Session, text string) {
 }
 
 // TestMaybeAutoCompactForcedAfterClaudeCodeToNativeSwitch is the red-first
-// regression test for the live incident (session
-// ses_01m1kyhka3ewf8vcth0qbqm222): a session delegated to the Claude Code
-// CLI for its entire life accumulates a huge harness journal purely as a
-// passive record (harness's own automatic compaction is unconditionally
-// skipped for a delegated turn — see PromptWithOrigin's early dispatch).
+// regression test proving that a session delegated to the Claude Code CLI
+// for its entire life, which accumulates a huge harness journal purely as
+// a passive record (harness's own automatic compaction is unconditionally
+// skipped for a delegated turn — see PromptWithOrigin's early dispatch),
+// stays recoverable on switching back to a native model.
 // applyClaudeCodeUsage DOES set s.lastUsage/haveLastUsage on every delegated
 // turn, but from the CLI's OWN internal, self-managed context accounting —
 // a number with no relationship to harness's own journal size, since the
@@ -2364,24 +2371,25 @@ func TestForcedCompactionErrorProceedsToNativeProviderAfterClaudeCodeSwitch(t *t
 }
 
 // TestForceCompactionCheckSurvivesReload is the red-first regression test
-// for BLOCKING 1 of the andybons/claude-code-compaction-forced-switch fix
-// round: forceCompactionCheck used to be a memory-only Session field,
-// deliberately excluded from the journal fold AND the snapshot. The stale
-// signal it exists to distrust — a delegated turn's lastUsage, folded in by
-// recClaudeCodeUsage — is durable, so any process restart or residency
-// eviction between the SetModel switch and the next Prompt lost the arming
-// flag while the stale figure survived intact: a reload took the ORDINARY
-// branch, trusted the small CLI-reported lastUsage, and forwarded the full,
-// never-compacted journal to the native provider — the original incident,
-// on a cold session. This seeds a delegated session, switches to a native
-// model, then RELOADS from the durable journal instead of continuing to
+// proving forceCompactionCheck itself survives a reload, not only a live
+// *Session: a memory-only field, excluded from the journal fold and the
+// snapshot, would leave the stale signal it exists to distrust — a
+// delegated turn's lastUsage, folded in by recClaudeCodeUsage — durable
+// while the arming flag itself is not. Any process restart or residency
+// eviction between the SetModel switch and the next Prompt would then lose
+// the arming flag while the stale figure survives intact: a reload takes
+// the ORDINARY branch, trusts the small CLI-reported lastUsage, and
+// forwards the full, never-compacted journal to the native provider on a
+// cold session. This seeds a delegated session, switches to a native
+// model, then RELOADS from the durable journal rather than continuing to
 // use the live *Session (simulating exactly that gap), and prompts on the
 // reloaded session.
 //
-// Named failure this pins: pre-fix, the reloaded session's
-// forceCompactionCheck is false (never folded from recModel/recMessage,
-// never restored from a snapshot), so CompactionCount stays 0 and the final
-// native request still carries every seeded pre-switch message.
+// Named failure this pins: without journaling forceCompactionCheck, the
+// reloaded session's forceCompactionCheck is false (never folded from
+// recModel/recMessage, never restored from a snapshot), so
+// CompactionCount stays 0 and the final native request still carries
+// every seeded pre-switch message.
 func TestForceCompactionCheckSurvivesReload(t *testing.T) {
 	nativeModel := message.ModelRef{Provider: "test", Model: "m1"}
 	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
@@ -2440,20 +2448,18 @@ func TestForceCompactionCheckSurvivesReload(t *testing.T) {
 }
 
 // TestForceCompactionCheckClearsAndStaysOffAfterFailedAttempt is the
-// red-first regression test for the retry half of round-3 review BLOCKING
-// A: a forced pass whose own Compact call fails for a real, unclassified
-// reason (see TestForcedCompactionErrorProceedsToNativeProviderAfterClaudeCodeSwitch
+// red-first regression test proving that a forced pass whose own Compact
+// call fails for a real, unclassified reason (see
+// TestForcedCompactionErrorProceedsToNativeProviderAfterClaudeCodeSwitch
 // for that first attempt's own assertions) clears forceCompactionCheck via
-// failForcedCompactionLoudly — it does NOT stay armed. This used to pin the
-// OPPOSITE requirement (BLOCKING 2 of the original fix round): that the
-// flag survive the failed attempt so a retry re-checks and re-forces
-// compaction. Round 3 removed the growth-triggered re-arm entirely (see
-// docs/design/context-compaction.md) precisely because that mechanism
-// could not distinguish "the journal grew because a retry is due" from
-// "the journal grew because the caller sent another prompt" — so the
-// correct behavior for a retry after a terminated forced pass is now the
-// ORDINARY (non-forced) path, which does not reissue the summarizer at
-// all.
+// failForcedCompactionLoudly — it does NOT stay armed. A growth-triggered
+// re-arm, where the flag survives a failed attempt so a retry re-checks
+// and re-forces compaction, is deliberately rejected (see
+// docs/design/context-compaction.md): it cannot distinguish "the journal
+// grew because a retry is due" from "the journal grew because the caller
+// sent another prompt". The correct behavior for a retry after a
+// terminated forced pass is the ORDINARY (non-forced) path, which does
+// not reissue the summarizer at all.
 func TestForceCompactionCheckClearsAndStaysOffAfterFailedAttempt(t *testing.T) {
 	nativeModel := message.ModelRef{Provider: "test", Model: "m1"}
 	// No scripted turns: the forced compaction's own summarization call is
@@ -2666,23 +2672,22 @@ func (p *contextOverflowOnceProvider) Stream(ctx context.Context, req *provider.
 }
 
 // TestMaybeAutoCompactForcedCompactErrorTerminatesAndProceeds is the
-// red-first regression test for round-3 review BLOCKING A: pre-fix, ANY
-// error from a forced pass's own Compact call — not a skip, a real failure
-// — left forceCompactionCheck armed and failed the Prompt call outright
-// ("engine: forced compaction failed: %w"), forever: the next Prompt call
-// reissued the identical oversized fold range against the identical
+// red-first regression test proving a forced pass whose own Compact call
+// returns ANY error — not a skip, a real failure — does not leave a
+// session permanently un-promptable. A gate that instead left
+// forceCompactionCheck armed and failed the Prompt call outright ("engine:
+// forced compaction failed: %w") would fail forever: the next Prompt call
+// reissues the identical oversized fold range against the identical
 // summarizer, which is deterministic for a classified context-overflow
 // error (retrying changes nothing about the request shape — the same
 // precedent engine/goal.go:1173 already applies to a live native turn). A
 // session whose delegated journal outgrew the summarizer model's OWN
-// window at the moment of a claude-code-to-native switch was therefore
-// permanently un-promptable on any native model, with no in-band escape —
-// exactly the incident class NEW-9 exists to close, reached through the
-// one branch that fix did not touch. This pins the fix instead:
-// EventCompactionFailed still reports the error (never silent), but Prompt
-// SUCCEEDS on the very call that hit it — the request proceeds to the
-// native provider for its own real verdict — forceCompactionCheck is
-// cleared, and (see the growth re-arm's removal, docs/design/
+// window at the moment of a claude-code-to-native switch would then be
+// permanently un-promptable on any native model, with no in-band escape.
+// Instead: EventCompactionFailed still reports the error (never silent),
+// but Prompt SUCCEEDS on the very call that hit it — the request proceeds
+// to the native provider for its own real verdict — forceCompactionCheck
+// is cleared, and (see the growth re-arm's removal, docs/design/
 // context-compaction.md) a later Prompt call does not re-invoke the
 // summarizer at all: the mechanism stays off until a native turn lands
 // usage or SetModel switches again.

@@ -72,10 +72,10 @@ var errEvaluatorUnparseable = errors.New("engine: goal evaluator returned unpars
 
 // goalStreamTruncatedMaxAttempts bounds worker-turn attempts whose failure
 // is classified provider.RetryableStreamTruncated — a response stream that
-// died before its terminal event. Truncation is retryable (the 2026-08-06
-// incident's truncated turns were followed by clean successes minutes
-// later on the same model — the cut was a gateway's per-response ceiling,
-// not a dead provider) but it is NOT weather: waiting longer does not
+// died before its terminal event. Truncation is retryable (a truncated
+// turn is commonly followed by a clean success minutes later on the same
+// model — the cut is a gateway's per-response ceiling, not a dead
+// provider) but it is NOT weather: waiting longer does not
 // raise a stream ceiling, and every retry re-prompts a full turn at full
 // input cost, so it must never ride goalRetryableMaxAttempts' 12-attempt/
 // ~30-minute schedule. Three attempts on the short goalRetryDelay
@@ -234,12 +234,11 @@ const (
 // immediate park. That is correct for a malformed request (retrying an
 // identical request fails identically forever) but wrong here — an account
 // wall lifts on its own, unchanged, the moment the provider's own clock
-// rolls over (see provider.ErrKindProviderExhausted's doc comment) — so
-// fail-fast silently killed goal supervision on the very first usage-limit
-// rejection instead of giving the wall any chance to clear. Live evidence:
-// box bx-01m0x8996 parked after "1 permanent-tier attempt(s)" on "You have
-// reached your specified API usage limits" and never resumed without an
-// operator DELETE + re-register.
+// rolls over (see provider.ErrKindProviderExhausted's doc comment).
+// Fail-fast on the very first usage-limit rejection silently kills goal
+// supervision: the goal parks after "1 permanent-tier attempt(s)" on "You
+// have reached your specified API usage limits" and never resumes; only an
+// operator DELETE + re-register clears it.
 //
 // RecoverHint (the provider's own "you regain access on <date>" statement)
 // is deliberately NEVER parsed into a wait duration — see
@@ -266,9 +265,9 @@ const goalProviderExhaustedMaxAttempts = goalRetryableMaxAttempts
 // bookkeeping (see goalClassProviderExhausted's doc comment below), shared
 // by promptTurnWithRetry and PursueGoal's worker-turn error handling so the
 // two sites can never independently drift on what counts as
-// provider-exhausted or which class value marks it — a review finding on
-// the fix that introduced this tier: the override was duplicated verbatim
-// at both call sites. retryable/class are the caller's own
+// provider-exhausted or which class value marks it: duplicating the
+// override at both call sites would let them diverge. retryable/class are
+// the caller's own
 // provider.AsRetryable(err) result, passed through unchanged when err is
 // not provider-exhausted; providerExhausted reports which branch fired, for
 // callers (promptTurnWithRetry) that need it for their own dispatch beyond
@@ -428,8 +427,8 @@ type goalWorkerParkedError struct {
 	err       error
 	attempts  int
 	retryable bool
-	// permanent is true when err was classified provider.AsPermanent (NEP-
-	// 5272 defect 1) — a fail-fast, single-attempt park, distinct from an
+	// permanent is true when err was classified provider.AsPermanent — a
+	// fail-fast, single-attempt park, distinct from an
 	// ordinary deterministic exhaustion (goalWorkerRetries+1 attempts). Only
 	// ever true when retryable is false (the two classifications are
 	// mutually exclusive — see provider.AsPermanent's doc comment); named
@@ -482,8 +481,9 @@ func IsGoalWorkerParked(err error) bool {
 // rate_limited/server_error, see provider.RetryableClass), so this string
 // only needs to say which TIER parked the turn, not repeat that detail.
 //
-// permanent (NEP-5272 defect 1) distinguishes a fail-fast, single-attempt
-// park (a malformed-request-shape error provider.AsPermanent classified) —
+// permanent (the permanent-error early-park case) distinguishes a
+// fail-fast, single-attempt park (a malformed-request-shape error
+// provider.AsPermanent classified) —
 // which never spent the deterministic budget at all — from an ordinary
 // exhausted-retries park, so an operator reading this reason is never
 // misled into thinking goalWorkerRetries+1 identical attempts happened when
@@ -676,10 +676,10 @@ func (s *Session) PursueGoal(ctx context.Context, condition string, opts GoalOpt
 		// failure, an evaluator failure, or a discarded evaluator verdict —
 		// leaves `reason` untouched, so without this check the NEXT turn's
 		// directive would silently repeat a reason that describes a
-		// condition or transcript state that is no longer current (the live
-		// incident this guards: turn 3 repeated turn 1's "the file does not
-		// exist" feedback verbatim, one turn after turn 2 had created the
-		// file and self-adjusted the goal). The same rule also covers a
+		// condition or transcript state that is no longer current — for
+		// example, turn 3 repeating turn 1's "the file does not exist"
+		// feedback verbatim after turn 2 already created the file and
+		// self-adjusted the goal. The same rule also covers a
 		// generation change that happens WITHOUT any discard — e.g. an
 		// UpdateGoal landing in the gap between turn N ending and turn N+1's
 		// snapshot — since the check is purely "does this turn's generation
@@ -758,14 +758,12 @@ func (s *Session) PursueGoal(ctx context.Context, condition string, opts GoalOpt
 			// running out, the retryable-class budget
 			// (goalRetryableMaxAttempts) running out, or the non-idempotency
 			// gate stopping retries early after a tool already executed —
-			// now EXIT-PARKS instead of clearing the goal, superseding both
-			// the clear this package used before this commit AND GitHub
-			// issue #61's in-loop `continue` self-re-arm (see the removed
-			// comment this replaces, and the worker failure handling
-			// section for the full incident and rationale). The only
-			// worker-turn failure that still clears is context overflow,
-			// immediately below — a deterministic failure no amount of
-			// waiting can fix, unlike every case reaching this point.
+			// exit-parks the goal, preserving its condition and directive
+			// for a human or a later retry rather than discarding
+			// accumulated progress. The only worker-turn failure that
+			// still clears is context overflow, immediately below — a
+			// deterministic failure no amount of waiting can fix, unlike
+			// every case reaching this point.
 			//
 			// class/retryable are derived directly from the returned err via
 			// provider.AsRetryable, not from checking whether
@@ -807,8 +805,8 @@ func (s *Session) PursueGoal(ctx context.Context, condition string, opts GoalOpt
 				s.clearGoal(err.Error())
 				return nil, err
 			}
-			// NEP-5272 defect 1: a permanent-classified error (see
-			// promptTurnWithRetry's fail-fast branch above) is, like context
+			// A permanent-classified error (see promptTurnWithRetry's
+			// fail-fast branch above) is, like context
 			// overflow, never classified retryable — but unlike context
 			// overflow it does NOT clear: the malformed request shape that
 			// produced it might be fixed by something else entirely before a
@@ -894,9 +892,9 @@ func (s *Session) PursueGoal(ctx context.Context, condition string, opts GoalOpt
 				// failure's, so a reader never has to guess which half of
 				// the loop gave up) and DOES emit session.error — it must be
 				// LOUD, since past this point nothing else will ever explain
-				// the goal's silence, the exact failure mode Round 3 closed
-				// for a single failure and this horizon exists to close
-				// again at N consecutive ones.
+				// the goal's silence; this horizon closes that same silent
+				// failure mode when it recurs at N consecutive evaluator
+				// failures rather than only once.
 				clearReason := fmt.Sprintf("goal evaluator failed at %d consecutive turn boundaries", evalFailures)
 				s.clearGoal(clearReason)
 				exhaustedErr := &goalEvaluatorExhaustedError{err: err, failures: evalFailures}
@@ -1083,8 +1081,8 @@ func (s *Session) promptTurnWithRetry(ctx context.Context, directive string, tur
 	// anchor's tail then never again shrinks to a droppable shape, so
 	// EVERY later fallback re-appends yet another duplicate and drops none
 	// — up to one per remaining attempt over a long outage
-	// (goalRetryableMaxAttempts = 12), the exact NEP-5272 growth this
-	// package exists to eliminate, reopened on this one path. Re-anchoring
+	// (goalRetryableMaxAttempts = 12), the exact unbounded duplicate growth
+	// this package exists to eliminate, reopened on this one path. Re-anchoring
 	// to right before the fresh directive each fallback appends means the
 	// NEXT attempt's tail is that directive alone, so directiveReuseEligible
 	// picks it up and reuse resumes — bounding the damage to the one
@@ -1164,7 +1162,7 @@ func (s *Session) promptTurnWithRetry(ctx context.Context, directive string, tur
 		// above already returned false for it — but for the GOAL LOOP it
 		// behaves like weather, not a doomed request: the wall lifts on its
 		// own (see goalProviderExhaustedMaxAttempts' doc comment for the
-		// live incident this closes). classifyProviderExhausted (shared with
+		// failure shape this closes). classifyProviderExhausted (shared with
 		// PursueGoal's own identical call above, so the two sites can never
 		// drift) folds it into the local retryable/class variables here,
 		// rather than adding a fourth classification threaded separately
@@ -1214,7 +1212,7 @@ func (s *Session) promptTurnWithRetry(ctx context.Context, directive string, tur
 			return attempts, err
 		}
 		if !providerExhausted && provider.AsPermanent(err) {
-			// NEP-5272 defect 1: a provider error classified permanent (an
+			// A provider error classified permanent (an
 			// HTTP 400 invalid_request_error naming a structurally
 			// malformed request — e.g. an orphaned tool_use left over from
 			// an earlier bug) is, like context overflow above, deterministic
@@ -1253,8 +1251,9 @@ func (s *Session) promptTurnWithRetry(ctx context.Context, directive string, tur
 			// of waiting and trying again — regardless of classification.
 			return attempts, err
 		}
-		// NEP-5272 defect 2. Before docs/design/goal-retry-directive-reuse.md,
-		// NOT every branch below this point was about to retry — the three
+		// The retry-directive-duplication case. Before
+		// docs/design/goal-retry-directive-reuse.md, NOT every branch below
+		// this point was about to retry — the three
 		// budget-exhaustion returns just below (deterministic, and the two
 		// goalRetryableExhaustedError cases) PARK instead, and a parked
 		// attempt's directive must stay in live history verbatim (see
@@ -1416,8 +1415,8 @@ func (s *Session) lastMessageID() string {
 // all; it reuses that exact message instead (runAgenticLoop, engine.go), so
 // no duplicate is ever appended and nothing here needs to run.
 //
-// This originated as NEP-5272 defect 2's mitigation (operator finding on
-// box hyper-lemon): before the reuse fix, EVERY retry re-issued the
+// This originated as a mitigation for the retry-directive-duplication
+// case: before the reuse fix, EVERY retry re-issued the
 // directive through Prompt, which appends whatever text it is given as a
 // brand-new user message with no notion of "this is a retry, don't
 // duplicate it" — N failed attempts left N unanswered copies in history,
@@ -1558,15 +1557,15 @@ func isInterruptedToolResultMessage(m message.Message) bool {
 // about to park — see PursueGoal's doc comment).
 //
 // Reason is err.Error() verbatim for every class except
-// goalClassProviderExhausted — a review finding on the fix that introduced
-// that class: err.Error() for a provider-exhausted error starts with
-// "[permanent] ..." (the adapter wraps it provider.MarkPermanent — see that
-// constant's doc comment), which reads as self-contradicting next to this
-// SAME record's own Retryable:true/RetryableClass:"provider_exhausted"
-// fields. That one class instead renders through classifyGoalWorkerError,
-// the same classified rendering recordGoalParked already uses, so a
-// goal.stalled record for this class reads consistently with its own
-// classification fields instead of echoing raw permanent-branch text.
+// goalClassProviderExhausted: err.Error() for a provider-exhausted error
+// starts with "[permanent] ..." (the adapter wraps it
+// provider.MarkPermanent — see that constant's doc comment), which reads
+// as self-contradicting next to this SAME record's own
+// Retryable:true/RetryableClass:"provider_exhausted" fields. That one
+// class renders through classifyGoalWorkerError, the same classified
+// rendering recordGoalParked already uses, so a goal.stalled record for
+// this class reads consistently with its own classification fields rather
+// than echoing raw permanent-branch text.
 func (s *Session) recordGoalStalled(err error, turn, attempt int, retryable bool, class provider.RetryableClass, waiting bool, gen uint64) bool {
 	s.mu.Lock()
 	if !s.goalActive || s.goalGen != gen {
@@ -2078,12 +2077,12 @@ func trimReason(s string) string {
 // goalAdjustedNotice replaces a carried-over evaluator reason in
 // goalGuidance whenever the goal's generation changed since that reason was
 // produced (see PursueGoal's reasonGen bookkeeping). A stale reason
-// describes state as of an earlier, possibly now-obsolete condition — the
-// live incident this guards had turn 3's directive repeat turn 1's "the file
-// does not exist" feedback verbatim after turn 2 had already created the
-// file and self-adjusted the goal, costing an extra turn re-litigating
-// something already true. Reusing goalGuidance's own fixed-template tone
-// rather than inventing a new shape.
+// describes state as of an earlier, possibly obsolete condition — for
+// example, turn 3's directive repeating turn 1's "the file does not exist"
+// feedback verbatim after turn 2 already created the file and
+// self-adjusted the goal, costing an extra turn re-litigating something
+// already true. Reusing goalGuidance's own fixed-template tone rather than
+// inventing a new shape.
 const goalAdjustedNotice = "the goal condition changed since the last evaluation; disregard the previous evaluator feedback and re-assess against the current goal below"
 
 // goalGuidance is the fixed-template directive sent after a NOT MET verdict.
@@ -2127,12 +2126,13 @@ func renderMessageBlock(m message.Message) string {
 // later — never mistakes a truncated transcript for the whole session.
 const goalEvaluatorTruncationNotice = "[earlier conversation omitted to fit the evaluator's context budget]\n\n"
 
-// renderConversationBounded is renderConversation's budget-aware sibling:
-// the fix for the live incident on box bx-01m0x8996, whose evaluator died
-// with "context exhausted: prompt 245332 tokens > limit ..." because
+// renderConversationBounded is renderConversation's budget-aware sibling.
 // renderConversation(s.History()) has no bound at all — it grows with the
-// WHOLE session transcript forever, while the main session is protected by
-// automatic compaction (engine/compact.go) and the evaluator never was.
+// WHOLE session transcript forever, so an evaluator call can fail with
+// "context exhausted: prompt N tokens > limit ..." once the transcript
+// outgrows the evaluator's own context window. The main session is
+// protected by automatic compaction (engine/compact.go); the evaluator
+// needs its own bound.
 //
 // It walks history from the NEWEST message backward, accumulating rendered
 // blocks (renderMessageBlock — the exact same per-part goalPartCap rendering
@@ -2213,10 +2213,9 @@ const goalEvaluatorContextBudgetFraction = 0.5
 // ref, a custom gateway alias) — mirrors minAutoContextWindowTokens
 // (engine/context_window.go), the exact same floor automatic compaction
 // refuses to ARM below. A genuinely unrecognized evaluator model still gets
-// a real, bounded budget from this floor instead of falling back to the
-// fully unbounded renderConversation(s.History()) that produced the "prompt
-// 245332 tokens > limit" evaluator failure on bx-01m0x8996 in the first
-// place.
+// a real, bounded budget from this floor rather than the fully unbounded
+// renderConversation(s.History()), which can overflow the evaluator's own
+// context window and fail with "prompt N tokens > limit ...".
 //
 // This floor must NOT be reused as a stand-in for "the model's real window
 // is small" — see goalEvaluatorTranscriptBudgetBytes's doc comment for why
@@ -2228,29 +2227,27 @@ const goalEvaluatorFallbackContextWindowTokens = minAutoContextWindowTokens
 // goalEvaluatorTranscriptBudgetBytes returns the byte budget
 // renderConversationBounded must fit the rendered CONVERSATION TRANSCRIPT
 // field inside, derived from the EVALUATOR model's own context window —
-// never the main session model's, which can be (and on bx-01m0x8996, was —
-// a 1,000,000-token model against an evaluator whose own limit the incident
-// error names) far larger than the evaluator's own.
+// never the main session model's, which can run a context window far
+// larger than the evaluator's own (for example, a 1,000,000-token worker
+// model against a much smaller evaluator).
 //
 // This calls modelContextWindowLookup (modelmeta.ContextWindow) DIRECTLY —
-// deliberately NOT resolveContextWindow, despite that function existing
-// for exactly this "look up a model's context window" job and this
-// function's own earlier revision having called it. A review finding
-// caught why that was wrong: resolveContextWindow's minAutoContextWindowTokens
-// floor answers "should automatic compaction ARM for this window" — a
-// window below the floor is treated as bogus/untrustworthy metadata and the
-// function reports (0, disabled), identically to a model with NO metadata
-// at all. Calling it here silently conflated two different evaluator
-// models: a genuinely UNRECOGNIZED one (no table entry — this really
-// should fall back to a floor) and a REAL, SMALL, KNOWN one (gpt-4's
-// documented 8_192-token window is the table's own example of a legitimate
-// entry under the 16k floor) — both funneled into the SAME
-// goalEvaluatorFallbackContextWindowTokens (16k) fallback, so a real
-// 8_192-token evaluator got a budget roughly TWICE its actual window: the
-// exact overflow class this whole fix exists to close. Calling
-// modelContextWindowLookup directly and trusting ANY positive, KNOWN
-// window — however small — fixes that: the floor here applies only to a
-// true "no entry at all" miss, never to "the real entry is small."
+// deliberately NOT resolveContextWindow, even though that function exists
+// for exactly this "look up a model's context window" job.
+// resolveContextWindow's minAutoContextWindowTokens floor answers "should
+// automatic compaction ARM for this window" — a window below the floor is
+// treated as bogus/untrustworthy metadata, and the function reports (0,
+// disabled), identically to a model with NO metadata at all. Using it here
+// would conflate two different evaluator models: a genuinely UNRECOGNIZED
+// one (no table entry — this really should fall back to a floor) and a
+// REAL, SMALL, KNOWN one (gpt-4's documented 8_192-token window is the
+// table's own example of a legitimate entry under the 16k floor) — both
+// funneled into the SAME goalEvaluatorFallbackContextWindowTokens (16k)
+// fallback, so a real 8_192-token evaluator would get a budget roughly
+// TWICE its actual window. Calling modelContextWindowLookup directly and
+// trusting ANY positive, KNOWN window — however small — avoids that: the
+// floor here applies only to a true "no entry at all" miss, never to "the
+// real entry is small."
 func goalEvaluatorTranscriptBudgetBytes(evaluator message.ModelRef) int {
 	windowTokens, ok := modelContextWindowLookup(evaluator)
 	if !ok || windowTokens <= 0 {

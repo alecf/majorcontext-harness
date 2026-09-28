@@ -287,7 +287,7 @@ func transcodeRequest(req *provider.Request, ttl string) (*apiRequest, error) {
 	// within one turn, so a toggle between turns faces a final assistant TEXT
 	// turn. STATUS: a live enable-mid-tool-round probe
 	// (server/thinking_realmodel_live_test.go, TestEnableMidToolRoundLive) was
-	// TOLERATED by the API on 2026-08-11 — the turn completed, no reject — so
+	// TOLERATED by the API — the turn completed, no reject — so
 	// this limitation is theoretical, not confirmed. No fix is warranted unless
 	// that probe later reproduces a reject; the live suite keeps it as the guard.
 	// (The OFF direction, by contrast, DID wedge and is fixed below.)
@@ -345,22 +345,20 @@ func transcodeRequest(req *provider.Request, ttl string) (*apiRequest, error) {
 		})
 	}
 
-	// Defense-in-depth against a poisoned history (incident
-	// ses_01kx48z4rqfkpbwmzfdv1jzeg6): a ToolCall with no matching
-	// ToolResult in the immediately-following wire turn would otherwise
-	// transcode to a dangling tool_use block, which the Anthropic API
-	// rejects wholesale with HTTP 400 "tool_use ids were found without
+	// Defense-in-depth against a poisoned history: a ToolCall with no
+	// matching ToolResult in the immediately-following wire turn would
+	// otherwise transcode to a dangling tool_use block, which the Anthropic
+	// API rejects wholesale with HTTP 400 "tool_use ids were found without
 	// tool_result blocks immediately after". engine.Session's turn loop is
 	// the primary fix and keeps its own ingest self-consistent (see
 	// engine/engine.go), but this backstops any OTHER producer of history
 	// — a plugin hook, a hand-rolled adapter, a replayed log from an
 	// older binary — so a request never ships an orphaned tool_use.
-	// NormalizeForWire (NEP-5293 part 2), not ResolveOrphanToolCalls,
-	// belongs here: this call site builds one throwaway request and never
-	// touches the durable record, so the destructive/relocating repairs
-	// only NormalizeForWire performs are safe here specifically. See its
-	// doc comment for the full incident and the additive/transcode-only
-	// split.
+	// NormalizeForWire, not ResolveOrphanToolCalls, belongs here: this call
+	// site builds one throwaway request and never touches the durable
+	// record, so the destructive/relocating repairs only NormalizeForWire
+	// performs are safe here specifically. See its doc comment for the full
+	// mechanism and the additive/transcode-only split.
 	messages := imageclamp.Clamp(message.NormalizeForWire(req.Messages), imageLimits)
 
 	for i := range messages {
@@ -474,7 +472,8 @@ func transcodeParts(parts message.Parts, thinkingEnabled, topLevel bool) ([]apiB
 				// defensive fallback so a non-empty Content whose parts
 				// all happen to transcode to nothing still ships a
 				// present, non-empty content array rather than an omitted
-				// key (see the incident in SafeContent's own doc comment).
+				// key (see SafeContent's own doc comment for the failure it
+				// guards against).
 				content = []apiBlock{{Type: "text", Text: message.NoToolOutputText}}
 			}
 			blocks = append(blocks, apiBlock{

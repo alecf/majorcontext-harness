@@ -289,15 +289,14 @@ type Message struct {
 //
 // # A salvaged tool call must never carry invalid Arguments
 //
-// Two production goal sessions, ses_01kx453ewfedqrg7p3c64f8sca and
-// ses_01kx453ev9ejattygpf7rbzptw, died at the start of a worker turn with
-// "json: error calling MarshalJSON for type json.RawMessage: unexpected end
-// of JSON input" — three identical attempts — and GET /session/{id}/message
-// on them then 500'd with the message.Parts wrapper of the same error,
-// while the on-disk log stayed clean (the poisoned message failed to
-// persist and was never journaled). The len(Arguments) == 0 guard
-// safeArguments already carries did not catch it: a provider stream that
-// dies mid tool_use block — a connection drop during input_json_delta
+// A worker turn can die at its start with "json: error calling MarshalJSON
+// for type json.RawMessage: unexpected end of JSON input", and
+// GET /session/{id}/message on that session then 500s with the
+// message.Parts wrapper of the same error, while the on-disk log stays
+// clean (the poisoned message fails to persist and is never journaled).
+// The len(Arguments) == 0 guard safeArguments already carries does not
+// catch it: a provider stream that dies mid tool_use block — a connection
+// drop during input_json_delta
 // accumulation, or, as provider/anthropic/anthropic.go's protocol shows, a
 // max_tokens cutoff mid tool-call, which the API still closes out with a
 // normal content_block_stop/message_delta/message_stop sequence rather than
@@ -342,14 +341,14 @@ type Message struct {
 // Normalize's old len==0-only check and MarshalJSON's matching check, and
 // only failed once nested inside a larger document forced encoding/json to
 // validate it, reproducing the exact "json: error calling MarshalJSON for
-// type json.RawMessage: ..." failure this package has already incurred once
-// in production for ToolCall.Arguments. Both guards below now check
-// json.Valid, exactly mirroring the ToolCall.Arguments fix.
+// type json.RawMessage: ..." failure the ToolCall.Arguments guard above
+// exists to prevent. Both guards below now check json.Valid, exactly
+// mirroring the ToolCall.Arguments fix.
 //
 // # An empty ToolResult.Content is the same footgun, in reverse
 //
-// See SafeContent's doc comment (NEP-5272, root cause 2) for the full
-// incident. A ToolResult with empty Content transcodes to a tool_result
+// See SafeContent's doc comment for the full mechanism. A ToolResult
+// with empty Content transcodes to a tool_result
 // block every provider adapter in this package either rejects or drops.
 // Content counts as empty when it is nil, or when it carries only a blank
 // Text part — the exact shape bash.go leaves behind for a command with no
@@ -454,13 +453,11 @@ func (*ToolCall) partType() PartType { return PartToolCall }
 //
 // A non-empty but syntactically invalid Arguments — the truncated-JSON
 // shape a stream that dies mid tool_use block can leave behind (see
-// Message.Normalize's doc comment for the full incident,
-// ses_01kx453ewfedqrg7p3c64f8sca / ses_01kx453ev9ejattygpf7rbzptw) — is
-// normalized the same way as empty: json.RawMessage.MarshalJSON does not
-// validate its bytes either, so an invalid value "succeeds" in isolation and
-// only fails once nested inside a larger document that encoding/json must
-// compact to validate, which is exactly the shape that error took in
-// production. Normalize is the primary fix (it sanitizes at the one ingest
+// Message.Normalize's doc comment for the full mechanism) — is normalized
+// the same way as empty: json.RawMessage.MarshalJSON does not validate its
+// bytes either, so an invalid value "succeeds" in isolation and only fails
+// once nested inside a larger document that encoding/json must compact to
+// validate. Normalize is the primary fix (it sanitizes at the one ingest
 // choke point every message passes through, replacing invalid Arguments
 // with nil so this branch never even fires for a message that went through
 // it), but safeArguments checks json.Valid here too as defense in depth: a
@@ -502,7 +499,7 @@ func (*ToolResult) partType() PartType { return PartToolResult }
 // NoToolOutputText is the Content text substituted, via SafeContent below
 // and Message.Normalize, for a ToolResult whose real Content is empty in
 // every sense that matters — see SafeContent's doc comment for the full
-// incident. A marker string, rather than an empty Text part, is chosen
+// mechanism. A marker string, rather than an empty Text part, is chosen
 // deliberately: an agent (or an operator) reading its own transcript
 // benefits from seeing "(no output)" in place of a blank line, the same
 // way a shell prompt distinguishes "ran, produced nothing" from "never
@@ -528,22 +525,21 @@ func (tr ToolResult) isEmpty() bool {
 // SafeContent normalizes Content for marshaling and transcoding, mirroring
 // ToolCall.safeArguments's role for Arguments.
 //
-// # Incident NEP-5272, root cause 2: a null/absent tool_result content
-// wedges a session with no crash at all
+// # A null/absent tool_result content wedges a session with no crash at
+// all
 //
-// Folded into the same incident as the stop-reason orphan (see
-// engine.unexecutedToolCallStopReasonTextFmt's doc comment): replaying box
-// hyper-lemon's actual wedged history (session
-// ses_01kze9vds5fxd89dtv4accqjcp) against the live Bedrock/bifrost gateway
-// showed a request that was internally balanced — 44 tool_use, 44
-// tool_result, every pair adjacent — yet still 400'd with the identical
-// "tool_use ids were found without tool_result blocks immediately after".
-// The offending block was the tool_result for a `grep ... | head -20` that
-// matched nothing. Empty stdout made bash.go's captured-output path return
-// a ToolResult whose Content was a single blank Text part.
+// This is a distinct root cause from the stop-reason orphan (see
+// engine.unexecutedToolCallStopReasonTextFmt's doc comment): a request can
+// be internally balanced — every tool_use paired with a tool_result,
+// every pair adjacent — and still 400 with the identical "tool_use ids
+// were found without tool_result blocks immediately after" whenever one of
+// those tool_result blocks carries null or absent content. A
+// `grep ... | head -20` that matches nothing is enough: empty stdout makes
+// bash.go's captured-output path return a ToolResult whose Content is a
+// single blank Text part.
 //
-// A minimal 3-message reproduction against the live gateway isolated the
-// exact shape. Two wire shapes trigger the rejection: an explicit null,
+// A minimal 3-message reproduction isolates the exact shape. Two wire
+// shapes trigger the rejection: an explicit null,
 // and an omitted content field. The gateway ACCEPTS an empty array, an
 // empty string, and a single blank text block — only the absent forms
 // fail. That distinction matters here, because omitempty on
@@ -612,29 +608,27 @@ func (*Reasoning) partType() PartType { return PartReasoning }
 // A thinking-block signature or a redacted_thinking payload (see
 // provider/anthropic/transcode.go's anthropicReasoningData) is opaque to
 // this package and, in the ordinary case, small — a few hundred bytes. It
-// is not, however, bounded by anything: a provider is free to hand back an
-// entry orders of magnitude larger (a production session,
-// ses_01kx3ts0pjfap950bmr9b2js0b.jsonl, carries one thinking signature of
-// ~30KB against seven siblings of 350-600 bytes in the same run), and every
-// entry that makes it into history is replayed VERBATIM on every
-// subsequent request for the rest of the session — history only grows, it
-// is never pruned. An oversized entry is therefore not a one-time cost:
-// it is carried on every request from the turn it appears in onward,
-// compounding with whatever the next turn adds. That is a request-size
-// (and, on some providers, request-time) bomb hiding in something this
-// package treats as a small opaque blob.
+// is not, however, bounded by anything: a provider can hand back an entry
+// orders of magnitude larger — a single thinking signature has been
+// observed at roughly 30KB alongside sibling entries of a few hundred bytes
+// in the same run — and every entry that makes it into history is replayed
+// VERBATIM on every subsequent request for the rest of the session —
+// history only grows, it is never pruned. An oversized entry is therefore
+// not a one-time cost: it is carried on every request from the turn it
+// appears in onward, compounding with whatever the next turn adds. That is
+// a request-size (and, on some providers, request-time) bomb hiding in
+// something this package treats as a small opaque blob.
 //
 // maxProviderDataEntry bounds this the same way a zero-length entry is
 // already bounded (both are "Get, below, treats this as absent"): reasoning
 // replay is a context-quality optimization, not a correctness requirement
 // (a Reasoning part crossing to a different provider family is already
-// dropped), so refusing to replay an
-// oversized entry costs a turn's worth of thinking continuity/cache
-// affinity and nothing else. The cap is generous — 256KiB, several hundred
-// times the ordinary entry size seen in production — specifically so it
-// never fires on a legitimate large redacted_thinking payload from a long
-// extended-thinking turn; it exists to catch the pathological case, not to
-// budget the common one.
+// dropped), so refusing to replay an oversized entry costs a turn's worth
+// of thinking continuity/cache affinity and nothing else. The cap is
+// generous — 256KiB, several hundred times the entry sizes typically
+// observed in practice — specifically so it never fires on a legitimate
+// large redacted_thinking payload from a long extended-thinking turn; it
+// exists to catch the pathological case, not to budget the common one.
 //
 // # The map-shaped twin of the ToolCall.Arguments footgun
 //
@@ -649,11 +643,10 @@ func (*Reasoning) partType() PartType { return PartReasoning }
 // an entry straight out of the map (v.ProviderData[Family]) and reuses those
 // bytes downstream — as every current transcoder does — bypasses any
 // guard defined on the map type itself, because indexing a map is not a
-// call to any method. #42 fixed the ToolCall case and, because it only
-// looked at ToolCall, missed this one entirely: Reasoning.ProviderData
-// carries the exact same json.RawMessage under the exact same footgun, one
-// layer of map indirection away, and #42's fix does not reach it — which is
-// why the error recurred on a binary that already had #42's fix.
+// call to any method. A guard that covers only ToolCall.Arguments does not
+// close this: Reasoning.ProviderData carries the exact same json.RawMessage
+// under the exact same footgun, one layer of map indirection away, so the
+// fix must cover both types, not ToolCall alone.
 //
 // Get and MarshalJSON below are ProviderData's equivalent of
 // ToolCall.safeArguments/MarshalJSON: Get is the single choke point every
@@ -670,10 +663,10 @@ func (*Reasoning) partType() PartType { return PartReasoning }
 type ProviderData map[string]json.RawMessage
 
 // maxProviderDataEntry bounds a single ProviderData entry's replayed size —
-// 256KiB is chosen to sit far above any signature or
-// redacted_thinking payload observed in production while still being a
-// hard, structural bound: bytes, not tokens or entries, because the whole
-// point is bounding the wire size actually replayed.
+// 256KiB is chosen to sit far above any signature or redacted_thinking
+// payload size observed in practice while still being a hard, structural
+// bound: bytes, not tokens or entries, because the whole point is bounding
+// the wire size actually replayed.
 const maxProviderDataEntry = 256 * 1024
 
 // Get returns the ProviderData entry for family, treating a present-but
@@ -717,7 +710,7 @@ func (pd ProviderData) Get(family string) (json.RawMessage, bool) {
 // "succeeds" here in isolation and only fails once nested inside a larger
 // document that encoding/json must compact to validate — see Normalize's
 // doc comment ("A ProviderData entry has the exact same invalid-but-non-
-// empty footgun") for the incident shape this closes.
+// empty footgun") for the failure shape this closes.
 func (pd ProviderData) MarshalJSON() ([]byte, error) {
 	if pd == nil {
 		return []byte("null"), nil
@@ -901,8 +894,8 @@ const SyntheticOrphanIDPrefix = "synthetic-orphan-tool-result-"
 // through Session.append. Such a message exists only in the in-memory
 // history LoadSession rebuilds on every load — it is never itself
 // persisted to a session's durable log — so a durable record (a compact
-// record's FirstID/LastID, for example) must never name one. See NEP-5292
-// and engine/compact.go's Session.Compact.
+// record's FirstID/LastID, for example) must never name one. See
+// engine/compact.go's Session.Compact.
 func IsSyntheticOrphanID(id string) bool {
 	return strings.HasPrefix(id, SyntheticOrphanIDPrefix)
 }
@@ -916,7 +909,7 @@ func IsSyntheticOrphanID(id string) bool {
 // missing (Anthropic: HTTP 400 "tool_use ids were found without
 // tool_result blocks immediately after").
 //
-// # Superseded at transcode time by NormalizeForWire (NEP-5293 part 2)
+// # Superseded at transcode time by NormalizeForWire
 //
 // This function is purely additive by design — see its own "never
 // mutated in place" guarantee below — because engine.LoadSession applies
@@ -936,18 +929,16 @@ func IsSyntheticOrphanID(id string) bool {
 // function's own behavior is unchanged and remains exactly what
 // engine.LoadSession relies on.
 //
-// # Incident ses_01kx48z4rqfkpbwmzfdv1jzeg6
+// # An orphaned tool_use id wedges every retry
 //
-// A goal worker turn died with exactly that 400 naming one tool_use id,
-// and every subsequent goal-loop retry failed identically, killing the
-// goal: once an assistant message carrying a ToolCall part enters a
-// session's history without a following tool-role result — the provider
-// stream died between emitting the tool_call and the engine executing it,
-// or errored mid-turn — every later request replays that same orphaned
-// tool_use and is rejected the same way. This is the sibling, at the wire
-// protocol level, of the marshal-level poisoning fixed in the commit
-// titled "fix(message,engine): truncated ToolCall.Arguments must never
-// poison history" (see message.Normalize and
+// Once an assistant message carrying a ToolCall part enters a session's
+// history without a following tool-role result — the provider stream dies
+// between emitting the tool_call and the engine executing it, or errors
+// mid-turn — every later request replays that same orphaned tool_use and
+// is rejected with that 400. Left unrepaired, the orphaned tool_use is
+// never satisfied, so every subsequent retry fails the same way. This is
+// the sibling, at the wire protocol level, of the marshal-level poisoning
+// message.Normalize fixes for a truncated ToolCall.Arguments (see
 // engine/tool_call_poison_test.go): that fix keeps a poisoned ToolCall
 // marshalable; this one keeps a poisoned history transcodable.
 //

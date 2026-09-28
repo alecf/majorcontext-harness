@@ -481,10 +481,10 @@ func TestTranscriptStreamFrom_SyntheticOrphanRepairNeverJournaled(t *testing.T) 
 	dir := t.TempDir()
 	h := newHarnessDir(t, dir, &scriptedProvider{name: "test"})
 
-	id := "ses_5292000000000099"
+	id := "ses_6100000000000099"
 	// msg_2 is an assistant tool_call with no following tool-role result —
 	// the exact orphan shape message.ResolveOrphanToolCalls repairs, mirrors
-	// engine/compact_test.go's nep5292FixtureLines.
+	// engine/compact_test.go's orphanFoldFixtureLines.
 	fixture := `{"type":"session","id":"` + id + `","created_at":"2025-01-02T03:04:05Z"}
 {"type":"message","message":{"id":"msg_1","role":"user","parts":[{"type":"text","text":"task 1"}]}}
 {"type":"message","message":{"id":"msg_2","role":"assistant","parts":[{"type":"tool_call","call_id":"A","name":"bash","arguments":{}}]}}

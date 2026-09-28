@@ -93,8 +93,9 @@ type Event struct {
 	GoalTurns     int    `json:"goal_turns,omitempty"`
 	GoalAttempt   int    `json:"goal_attempt,omitempty"`
 	// GoalEvalFailures is carried by goal.eval_failed only (see
-	// engine/goal.go's "Round 6" doc section): the number of
-	// CONSECUTIVE failed evaluator boundaries as of this record, inclusive.
+	// engine/goal.go's doc comment on advisory evaluator-boundary
+	// failures): the number of CONSECUTIVE failed evaluator boundaries as
+	// of this record, inclusive.
 	// goal.cleared itself never carries a count (even the terminal clear
 	// that fires once this reaches goalEvalFailureLimit — its dedicated
 	// GoalReason text names the limit instead); the tracker's folded
@@ -194,8 +195,8 @@ type Event struct {
 	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
 
 	// Prompt-queue fields, carried by the prompt.queued/prompt.dequeued
-	// durable records (see engine/queue.go and docs/plans/2026-07-19-prompt-
-	// queue.md). QueueID is the queue-assigned, session-monotonic prompt ID.
+	// durable records (see engine/queue.go). QueueID is the queue-assigned,
+	// session-monotonic prompt ID.
 	// QueueText is the queued prompt text, carried on both events. QueueReason
 	// is empty on prompt.queued and one of "delivered" (idle drain),
 	// "injected" (goal-turn-boundary injection), or "cleared" (DELETE
@@ -226,9 +227,9 @@ type Event struct {
 	QueueLen    *int   `json:"queue_len,omitempty"`
 	// QueueSeq mirrors engine.Event.QueueSeq: the caller-issued idempotency
 	// sequence carried on a prompt.queued record from a durable enqueue
-	// (POST /session/{id}/enqueue, engine.Session.EnqueuePromptDurable) —
-	// see docs/plans/2026-07-21-durable-enqueue.md. 0/omitted on a plain
-	// enqueue (prompt_async) and on every prompt.dequeued.
+	// (POST /session/{id}/enqueue, engine.Session.EnqueuePromptDurable).
+	// 0/omitted on a plain enqueue (prompt_async) and on every
+	// prompt.dequeued.
 	QueueSeq int64 `json:"queue_seq,omitempty"`
 	// QueueSource, QueueSourceID, and QueueSourceLabel mirror
 	// engine.Event.QueueSource/QueueSourceID/QueueSourceLabel: the queued
@@ -276,13 +277,14 @@ const (
 	evtGoalAchieved = "goal.achieved"
 	evtGoalCleared  = "goal.cleared"
 	// evtGoalEvalFailed mirrors engine.EventGoalEvalFailed (see
-	// engine/goal.go's "Round 6" doc section): journaled once per
-	// failed evaluator boundary — a provider error the retryable-class
-	// in-boundary retry couldn't ride out, or two consecutive unparseable
-	// replies. Below goalEvalFailureLimit consecutive failures this is
-	// advisory only (the goal stays active); at the limit a goal.cleared
-	// with a dedicated reason follows instead, and the server maps the
-	// terminal error to the turn.end outcome outcomeEvaluatorExhausted.
+	// engine/goal.go's doc comment on advisory evaluator-boundary
+	// failures): journaled once per failed evaluator boundary — a provider
+	// error the retryable-class in-boundary retry couldn't ride out, or
+	// two consecutive unparseable replies. Below goalEvalFailureLimit
+	// consecutive failures this is advisory only (the goal stays active);
+	// at the limit a goal.cleared with a dedicated reason follows instead,
+	// and the server maps the terminal error to the turn.end outcome
+	// outcomeEvaluatorExhausted.
 	evtGoalEvalFailed = "goal.eval_failed"
 	// evtGoalPaused is journaled once per boot for every session whose
 	// journal shows an active goal but which has no running loop attached
@@ -292,18 +294,18 @@ const (
 	// boot-time observation). Always carries GoalPauseReason "restart".
 	evtGoalPaused = "goal.paused"
 	// evtGoalParked mirrors engine.EventGoalParked (see engine/goal.go's
-	// "Round 7" doc section): journaled once per exit-parked
-	// worker turn — either exhaustion tier (deterministic goalWorkerRetries
-	// or retryable-class goalRetryableMaxAttempts) — WITHOUT a following
-	// goal.cleared: the goal stays active. Unlike evtGoalPaused above (a
-	// boot-time OBSERVATION that no loop is attached), this is a LIVE event:
-	// the loop that just parked emitted it on its own way out. The server
-	// maps it onto the third "paused" arm (pause_reason "worker_failure",
-	// see pauseReasonWorkerFailure) and, at runGoal's tail, onto the
-	// turn.end outcome outcomeWorkerParked — the loop resumes on the next
-	// ordinary activity via the existing activity-driven auto-arm
-	// (maybeAutoArmGoal), exactly like a restart pause resumes via an
-	// operator's re-POST.
+	// doc comment on goal-worker failure handling): journaled once per
+	// exit-parked worker turn — either exhaustion tier (deterministic
+	// goalWorkerRetries or retryable-class goalRetryableMaxAttempts) —
+	// WITHOUT a following goal.cleared: the goal stays active. Unlike
+	// evtGoalPaused above (a boot-time OBSERVATION that no loop is
+	// attached), this is a LIVE event: the loop that just parked emitted
+	// it on its own way out. The server maps it onto the third "paused"
+	// arm (pause_reason "worker_failure", see pauseReasonWorkerFailure)
+	// and, at runGoal's tail, onto the turn.end outcome
+	// outcomeWorkerParked — the loop resumes on the next ordinary activity
+	// via the existing activity-driven auto-arm (maybeAutoArmGoal),
+	// exactly like a restart pause resumes via an operator's re-POST.
 	evtGoalParked = "goal.parked"
 
 	// evtPromptDequeued mirrors engine.EventPromptDequeued (see
@@ -385,10 +387,11 @@ const outcomeContextExhausted = "context_exhausted"
 
 // outcomeEvaluatorExhausted is the turn.end outcome recorded when a goal
 // loop's evaluator has failed at goalEvalFailureLimit consecutive turn
-// boundaries (engine/goal.go's "Round 6" doc section): a durable,
-// probably-permanent evaluator outage. Distinct from the generic "error" for
-// the same reason outcomeContextExhausted and outcomeMaxTurnsExceeded are —
-// a poller reacting to "the evaluator itself is broken" (e.g. surfacing an
+// boundaries (engine/goal.go's doc comment on advisory evaluator-boundary
+// failures): a durable, probably-permanent evaluator outage. Distinct
+// from the generic "error" for the same reason outcomeContextExhausted
+// and outcomeMaxTurnsExceeded are — a poller reacting to "the evaluator
+// itself is broken" (e.g. surfacing an
 // operator alert rather than just retrying the goal) needs to tell this
 // apart from an ordinary worker-turn failure without string-matching
 // last_turn.error or GoalReason. Unlike every failed boundary below the
@@ -399,10 +402,11 @@ const outcomeEvaluatorExhausted = "evaluator_exhausted"
 
 // outcomeWorkerParked is the turn.end outcome recorded when a goal loop
 // exit-parks a worker turn instead of clearing the goal (engine/goal.go's
-// "Round 7" doc section): either exhaustion tier — deterministic
-// (goalWorkerRetries) or retryable-class (goalRetryableMaxAttempts) —
-// without the evaluator ever running. Distinct from the generic "error" for
-// the same reason outcomeContextExhausted/outcomeMaxTurnsExceeded/
+// doc comment on goal-worker failure handling): either exhaustion tier —
+// deterministic (goalWorkerRetries) or retryable-class
+// (goalRetryableMaxAttempts) — without the evaluator ever running.
+// Distinct from the generic "error" for the same reason
+// outcomeContextExhausted/outcomeMaxTurnsExceeded/
 // outcomeEvaluatorExhausted are: a poller needs to tell "this goal is
 // merely paused, waiting for the next ordinary activity to resume it" apart
 // from an operator-facing dead terminal. UNLIKE outcomeEvaluatorExhausted,
@@ -1081,7 +1085,7 @@ func (s *Server) syncMessages(sessionID string) {
 // after it, with no REPLAY window that can re-deliver (or, symmetrically,
 // permanently drop) a message straddling the two reads — the tail-load
 // versus live-stream race the console's duplicate-render bug traces to (see
-// the meetneptune/boxes repo's docs/console-read-path.md, and
+// the majorcontext/bailey repo's docs/console-read-path.md, and
 // handleMessages' ?stream_from=1 branch, this function's only caller).
 //
 // It is syncMessages (above) PLUS one extra locked read: sess.History() and
@@ -1141,7 +1145,7 @@ func (s *Server) syncMessages(sessionID string) {
 // argument, and its history in docs/design/transcript-tail-seqs.md). 0
 // for one with none (a message.IsSyntheticOrphanID load-time repair). It
 // exists so a caller that BUDGETS this history down to a shorter tail
-// (meetneptune/boxes's byte-budget console-bootstrap read, which trims
+// (majorcontext/bailey's byte-budget console-bootstrap read, which trims
 // client-side after this call returns the whole thing) can still learn
 // which durable ordinal its own kept window starts at, and page backward
 // from a real anchor on its FIRST "load older" request instead of

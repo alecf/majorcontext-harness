@@ -13,8 +13,8 @@ import (
 )
 
 // imageLimits are the image caps imageclamp enforces for OpenAI-compatible
-// endpoints. This adapter commonly fronts Amazon Bedrock / Google Vertex (the
-// NEP-5109 incident path, via OpenRouter), so it carries their documented
+// endpoints. This adapter commonly fronts Amazon Bedrock / Google Vertex
+// (via OpenRouter), so it carries their documented
 // constraints: 8000px per side, a stricter 2000px cap with >20 image/document
 // blocks, and 5MB base64 per image — the tightest per-image size limit of the
 // common OpenAI-compatible vision backends, so a clamped image is accepted by
@@ -160,23 +160,23 @@ func transcodeRequestOpts(req *provider.Request, family string, opts transcodeOp
 	// the level string. EffortOff sends the literal "off" (an explicit
 	// disable, not silence): a gateway upstream can default to reasoning ON
 	// when the field is absent, and unset must never send the field at all
-	// (unset means "provider default", not "reasoning off"). Measured
-	// (2026-08-12): Fireworks kimi-k3 through Bifrost streamed a full
-	// reasoning block by default with the field absent; sending the literal
-	// "off" fully suppressed it. EffortUnset omits the field, exactly as
-	// before.
+	// (unset means "provider default", not "reasoning off"). Fireworks
+	// kimi-k3 through Bifrost has been observed to stream a full reasoning
+	// block by default when the field is absent; sending the literal "off"
+	// has been observed to fully suppress it. EffortUnset omits the field,
+	// exactly as before.
 	//
 	// Unlike the anthropic and openai adapters, this one does NOT drop
 	// temperature/top_p or raise a max_tokens floor here. This is a generic
 	// openai-compatible gateway adapter: whether a reasoning model rejects
 	// temperature, and whether reasoning tokens count against max_tokens, is the
 	// GATEWAY's concern, and different openai-compat providers disagree (some
-	// accept temperature with reasoning). The gateway normalizes upstream. Live
-	// probing (2026-08-11) confirmed Bifrost's /chat/completions accepts
-	// reasoning_effort at low/medium/high with a small max_tokens and returns
-	// reasoning without a "max_tokens must exceed budget" error — so no local
-	// adjustment is needed for the deployed route. A future non-normalizing
-	// gateway would need per-provider handling here.
+	// accept temperature with reasoning). The gateway normalizes upstream.
+	// Bifrost's /chat/completions has been observed to accept
+	// reasoning_effort at low/medium/high with a small max_tokens and
+	// return reasoning without a "max_tokens must exceed budget" error —
+	// so no local adjustment is needed for the deployed route. A future
+	// non-normalizing gateway would need per-provider handling here.
 	switch {
 	case req.Effort == message.EffortOff:
 		out.ReasoningEffort = "off"
@@ -222,26 +222,25 @@ func transcodeRequestOpts(req *provider.Request, family string, opts transcodeOp
 		out.Messages = append(out.Messages, apiMessage{Role: "system", Content: raw})
 	}
 
-	// Defense-in-depth against a poisoned history (incident
-	// ses_01kx48z4rqfkpbwmzfdv1jzeg6): a tool call with no matching result
-	// in the immediately-following wire turn would otherwise transcode to a
-	// dangling tool_calls entry with no paired "tool"-role message, which
-	// this wire protocol also requires immediately after (mirrors
-	// provider/anthropic/transcode.go's identical guard).
-	// engine.Session's turn loop is the primary fix and keeps its own
-	// ingest self-consistent (see engine/engine.go), but this backstops
-	// any OTHER producer of history. message.NormalizeForWire (NEP-5293
-	// part 2) is the transcode-only repair used here — this call site
-	// builds one throwaway request and never touches the durable record,
-	// so its destructive/relocating repairs are safe here; see its doc
-	// comment for the full incident and the additive
-	// (message.ResolveOrphanToolCalls, LIVE history only) / transcode-only
-	// split. Note this adapter's own transcodeMessage below is role-strict
-	// (RoleUser/RoleAssistant/RoleTool each accept only their expected part
-	// types and error otherwise), so a ToolCall stranded in a non-assistant
-	// message already fails loudly here rather than reaching the wire
-	// malformed — NormalizeForWire's repair for that shape matters for the
-	// other two (role-agnostic) transcoders, not this one.
+	// Defense-in-depth against a poisoned history: a tool call with no
+	// matching result in the immediately-following wire turn would
+	// otherwise transcode to a dangling tool_calls entry with no paired
+	// "tool"-role message, which this wire protocol also requires
+	// immediately after (mirrors provider/anthropic/transcode.go's
+	// identical guard). engine.Session's turn loop is the primary fix and
+	// keeps its own ingest self-consistent (see engine/engine.go), but
+	// this backstops any OTHER producer of history. message.NormalizeForWire
+	// is the transcode-only repair used here — this call site builds one
+	// throwaway request and never touches the durable record, so its
+	// destructive/relocating repairs are safe here; see its doc comment
+	// for the full mechanism and the additive (message.ResolveOrphanToolCalls,
+	// LIVE history only) / transcode-only split. Note this adapter's own
+	// transcodeMessage below is role-strict (RoleUser/RoleAssistant/RoleTool
+	// each accept only their expected part types and error otherwise), so
+	// a ToolCall stranded in a non-assistant message already fails loudly
+	// here rather than reaching the wire malformed — NormalizeForWire's
+	// repair for that shape matters for the other two (role-agnostic)
+	// transcoders, not this one.
 	// imageLimits.RecurseToolResults is false: tool-result images are omitted
 	// on the wire (see toolResultOutput), so clamping them would be wasted work.
 	messages := imageclamp.Clamp(message.NormalizeForWire(req.Messages), imageLimits)

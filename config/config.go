@@ -218,8 +218,7 @@ type Config struct {
 	// ToolResultInlineBytes sets engine.Config.ToolResultInlineBytes: the
 	// size above which a TEXT tool result is retained into the session's
 	// sidecar store and replaced in history by a preview carrying a trh_N
-	// handle (see package engine's toolresult.go and
-	// docs/plans/2026-08-19-tool-result-handles.md). Unset (omitted, zero)
+	// handle (see package engine's toolresult.go). Unset (omitted, zero)
 	// takes the product default of 16384 via ToolResultInlineBytesValue;
 	// an EXPLICIT value <= 0 disables retention entirely. It is a *int, not
 	// a plain int, precisely so "unset" (take the default) and "0"
@@ -677,8 +676,7 @@ type Provider struct {
 	//
 	// It exists because the ChatGPT Codex backend's tool-schema validator
 	// is STRICTER than the OpenAI platform API: it 400s on a regex
-	// `pattern` using lookaround (confirmed on a live box; harness#213
-	// flagged this exact gap), and harness forwards tool schemas
+	// `pattern` using lookaround, and harness forwards tool schemas
 	// unsanitized. The default (false) sends every schema unchanged, so a
 	// normal openai/anthropic/bifrost provider — which accepts richer
 	// schemas and would only lose expressiveness from the rewrite — is

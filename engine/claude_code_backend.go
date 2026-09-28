@@ -356,16 +356,14 @@ func (s *Session) runClaudeCodeTurn(ctx context.Context) (*message.Message, erro
 		// message.Reasoning{Text: ""}, consumeClaudeCodeStream's
 		// `if r.Text != ""` guard emits no EventReasoningDelta, and every
 		// consumer sees a signature-only part it can neither render nor
-		// align against a streamed row. The boxes console rendered a turn
-		// TWICE off that asymmetry (meetneptune/boxes#599).
+		// align against a streamed row. A downstream console rendered a turn
+		// TWICE off that asymmetry.
 		//
 		// --thinking-display is the CLI's own override for that default and
 		// the ONLY channel that carries it: the `showThinkingSummaries`
-		// setting does not reach the request (verified — it returns an empty
-		// thinking field), and the API parameter is not otherwise reachable
-		// through the CLI. Verified end to end against a live Opus
-		// subscription session: 383 characters of summarized thinking where
-		// the same prompt without the flag returned 0.
+		// setting does not reach the request and returns an empty thinking
+		// field, and the API parameter is not otherwise reachable through the
+		// CLI.
 		//
 		// The flag is real but NOT listed in `claude --help` (`claude
 		// --thinking-display bogus` answers "Allowed choices are summarized,
@@ -673,9 +671,8 @@ func (s *Session) runClaudeCodeTurn(ctx context.Context) (*message.Message, erro
 	//
 	// stdin has exactly ONE closer now: this goroutine, here, never the
 	// pump itself (see its own two return paths above). That is what
-	// makes this safe against the wedge an adversarial review found on
-	// #231 (majorcontext/harness#231, commit 7918b6d): the pump can be
-	// BLOCKED inside stdin.Write when stopPump closes — a `claude --bg`
+	// makes this safe against the wedge where the pump can be BLOCKED
+	// inside stdin.Write when stopPump closes — a `claude --bg`
 	// leaked grandchild holding stdin's read end open, or simply a full
 	// pipe buffer at the exact turn-boundary instant — and a goroutine
 	// blocked in a syscall never reaches its own select to observe a
@@ -1131,12 +1128,12 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (
 	// standalone assistant message. This is the uncommon path: it fires
 	// only when a differently-parented envelope interrupts a buffered
 	// thinking block (a subagent frame interleaving with the main
-	// thread's own reasoning — never observed live against a real
-	// binary, but never silently dropped either) or when the stream ends
-	// before a reasoning-only envelope is ever followed by another one
-	// (an aborted or crashed turn). The common case — thinking
-	// immediately followed by the rest of its own turn segment — never
-	// reaches here; it merges instead, in the "assistant" case below.
+	// thread's own reasoning; the buffered block must still flush, not
+	// drop) or when the stream ends before a reasoning-only envelope is
+	// ever followed by another one (an aborted or crashed turn). The
+	// common case — thinking immediately followed by the rest of its own
+	// turn segment — never reaches here; it merges instead, in the
+	// "assistant" case below.
 	flushPendingReasoning := func() {
 		if len(pendingReasoning) == 0 {
 			return
@@ -1367,9 +1364,7 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (
 			// if a LATER envelope's own message happened to overwrite the
 			// stranded row, so a turn ending on its text (no tool call
 			// after it) left the duplicate on screen until the viewer
-			// reloaded. Reported twice against the boxes console
-			// (meetneptune/boxes#599 fixed a different orphan shape; this
-			// is the one that produced the plain-text repro).
+			// reloaded.
 			emitClaudeCodeParts(msg.Parts[alreadyStreamed:], msg.ID, msg.CreatedAt)
 			pendingAssistant = &msg
 			pendingAssistantUpstream = upstream

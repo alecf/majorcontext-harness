@@ -8,14 +8,13 @@ import (
 
 // This file is an INDEPENDENT oracle for "does this canonical history
 // transcode to a protocol-valid provider request." It exists because of a
-// bug class this package already shipped once: message/properties_test.go
-// used to define hasOrphanToolCall by re-deriving ResolveOrphanToolCalls's
-// own documented scan line-for-line (RoleAssistant-gated, "check only
-// messages[i+1]", set-membership presence) — an oracle that shares its
-// implementation's definition of correctness cannot fail on a wrong
-// definition. A rewrite of ResolveOrphanToolCalls that deleted genuine tool
-// output shipped and was reverted for exactly that reason (see the
-// "fix(message,engine): narrow to the verified incident fix" commit).
+// structural bug class: message/properties_test.go used to define
+// hasOrphanToolCall by re-deriving ResolveOrphanToolCalls's own documented
+// scan line-for-line (RoleAssistant-gated, "check only messages[i+1]",
+// set-membership presence) — an oracle that shares its implementation's
+// definition of correctness cannot catch a rewrite of
+// ResolveOrphanToolCalls that deletes genuine tool output while
+// preserving that same wrong definition.
 //
 // Every type and function below is built ONLY from two things: this
 // package's own doc comments (Message.Role, ToolCall, ToolResult,
@@ -26,8 +25,8 @@ import (
 // provider/openaicompat/transcode.go): specifically, that every transcoder
 // maps message.RoleAssistant to a wire "assistant" turn and every other
 // Role to a non-assistant turn, and that Anthropic (the strictest — see
-// ResolveOrphanToolCalls's own doc comment, "Incident
-// ses_01kx48z4rqfkpbwmzfdv1jzeg6") merges adjacent same-side canonical
+// ResolveOrphanToolCalls's own doc comment, "An orphaned tool_use id
+// wedges every retry") merges adjacent same-side canonical
 // messages into one wire turn and requires every tool_use in an assistant
 // turn to be answered, id for id, by a tool_result in the IMMEDIATELY
 // FOLLOWING turn. This file never calls, imports, or copies
@@ -49,7 +48,7 @@ type wireMsg struct {
 }
 
 // wireResult is one tool_result's id and whether its content is empty in
-// the sense SafeContent's doc comment (NEP-5272, root cause 2) defines:
+// the sense SafeContent's doc comment defines:
 // nil, or carrying only a blank Text part — the shape a provider reads as
 // ABSENT, not as an empty result.
 type wireResult struct {
@@ -86,7 +85,7 @@ func foldWire(messages []Message) []wireMsg {
 
 // emptyToolResultContent decides what the PROVIDER treats as an absent
 // tool_result: nil content, or content whose every part is an empty Text.
-// That is the NEP-5272 wire fact — a null-content tool_result is read as
+// That is a wire fact — a null-content tool_result is read as
 // ABSENT and rejects the whole request — not a restatement of any harness
 // function.
 //
@@ -94,8 +93,8 @@ func foldWire(messages []Message) []wireMsg {
 // convergence on one wire rule, not the coupling this file's header
 // forbids: the header's rule is that the oracle never derives its notion
 // of CORRECTNESS from the code under test, and isEmpty is not under test
-// here — ResolveOrphanToolCalls, and the transcode-only repair NEP-5293
-// part 2 adds, are. If isEmpty ever
+// here — ResolveOrphanToolCalls, and the transcode-only repair
+// NormalizeForWire adds, are. If isEmpty ever
 // changes, this function must NOT follow it; it must keep encoding what
 // the provider does, and the disagreement is the signal.
 //
