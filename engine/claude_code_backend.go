@@ -220,6 +220,19 @@ func (s *Session) applyClaudeCodeUsage(usage, last provider.Usage, windowTokens 
 	s.persistClaudeCodeUsage(usage, last, windowTokens, costUSD)
 }
 
+// recordClaudeCodeCompact durably records one delegated compaction the
+// CLI's own stream-json protocol reported settled — see
+// consumeClaudeCodeStream's "compact_boundary" case. It carries no Session
+// state to fold (unlike applyClaudeCodeUsage above): a pure observational
+// trace, so this only journals. createdAt is the caller's own pre-lock
+// boundary-observation instant, passed through rather than resampled once
+// s.mu is held.
+func (s *Session) recordClaudeCodeCompact(trigger string, preTokens, postTokens int, startedAt, createdAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistClaudeCodeCompact(trigger, preTokens, postTokens, startedAt, createdAt)
+}
+
 // claudeCodeLastUsage returns a recClaudeCodeUsage record's final API call
 // usage, or its aggregate for a record written before that field existed.
 func claudeCodeLastUsage(usage, last *provider.Usage) *provider.Usage {
@@ -975,9 +988,16 @@ func claudeCodeHistoryDirectiveArgs(history []message.Message, watermark int) []
 // its subsequent cmd.Wait() does not reintroduce this wait.
 func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (finalMsg *message.Message, started bool, turnErr error, zeroMessageOK bool) {
 	var compactBoundarySeen, compactUnsettled bool
+	// compactStartedAt is the wall-clock instant this stream observed the
+	// CLI's own "compacting" status, reset to zero once consumed by the
+	// "compact_boundary" that settles it (or by a failed settlement) — it
+	// legitimately stays zero when a boundary arrives with no preceding
+	// status in this same turn.
+	var compactStartedAt time.Time
 	settleCompaction := func() {
 		if compactUnsettled {
 			compactUnsettled = false
+			compactStartedAt = time.Time{}
 			s.emit(Event{Type: EventCompactionFailed})
 		}
 	}
@@ -1183,12 +1203,19 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (
 				switch {
 				case env.Status == "compacting":
 					compactUnsettled = true
+					compactStartedAt = time.Now().UTC()
 					s.emit(Event{Type: EventCompactionStarted})
 				case env.CompactResultStatus != "" && env.CompactResultStatus != "success":
 					compactUnsettled = false
+					compactStartedAt = time.Time{}
 					s.emit(Event{Type: EventCompactionFailed, Text: env.CompactResultStatus})
 				}
 			case "compact_boundary":
+				// Captured before anything else below touches s.mu or does
+				// any work: the true end-of-compaction observation, not
+				// the instant recordClaudeCodeCompact eventually gets
+				// around to writing it.
+				boundaryObservedAt := time.Now().UTC()
 				compactBoundarySeen = true
 				compactUnsettled = false
 				// The CLI just compacted its OWN internal context — see
@@ -1217,6 +1244,8 @@ func (s *Session) consumeClaudeCodeStream(r io.Reader, model message.ModelRef) (
 						text += fmt.Sprintf(" post_tokens=%d", postTokens)
 					}
 				}
+				s.recordClaudeCodeCompact(trigger, preTokens, postTokens, compactStartedAt, boundaryObservedAt)
+				compactStartedAt = time.Time{}
 				s.emit(Event{
 					Type:                        EventClaudeCodeCompacted,
 					Text:                        text,

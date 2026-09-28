@@ -372,8 +372,9 @@ func (s *Session) Compact(ctx context.Context, opts CompactOptions) (CompactResu
 	foldStart := starts[0]
 	foldEndExclusive := starts[foldTurns] // first KEPT turn's leading RoleUser message
 	foldEnd := foldEndExclusive - 1
+	folded := history[foldStart : foldEnd+1]
 
-	if isLoneExistingSummary(history[foldStart : foldEnd+1]) {
+	if isLoneExistingSummary(folded) {
 		return CompactResult{SkipReason: SkipReasonLoneExistingSummary}, nil
 	}
 
@@ -444,18 +445,23 @@ func (s *Session) Compact(ctx context.Context, opts CompactOptions) (CompactResu
 	// Past this point Compact is committed to attempting a summary: every
 	// early-return skip (not-enough-turns, lone-existing-summary) and every
 	// journal-boundary error above have already returned. Emit the started
-	// signal now, immediately before the blocking summary call, so a live
-	// client can show a "compacting now" indicator — see
-	// EventCompactionStarted's doc comment for why this is always paired
-	// with a following EventHistoryCompacted or EventCompactionFailed.
+	// signal here, so a live client can show a "compacting" indicator —
+	// see EventCompactionStarted's doc comment for why this is always
+	// paired with a following EventHistoryCompacted or
+	// EventCompactionFailed.
 	s.emit(Event{
 		Type:               EventCompactionStarted,
 		CompactFirstID:     journaledFirstID,
 		CompactLastID:      journaledLastID,
 		CompactTurnsFolded: foldTurns,
 	})
+	// startedAt is captured here, immediately before the blocking summary
+	// call: emit runs OnEvent synchronously, so capturing it any earlier
+	// would fold event-delivery time into the durable created_at -
+	// started_at duration (see compactRecord.StartedAt's own doc comment).
+	startedAt := time.Now().UTC()
 
-	summaryText, usage, err := s.runCompactionSummary(ctx, model, history[foldStart:foldEnd+1])
+	summaryText, usage, err := s.runCompactionSummary(ctx, model, folded)
 	if err != nil {
 		s.emit(Event{Type: EventCompactionFailed, Text: err.Error()})
 		// errEmptyCompactionSummary is deliberately NOT surfaced as an error
@@ -547,7 +553,7 @@ func (s *Session) Compact(ctx context.Context, opts CompactOptions) (CompactResu
 	// Journal only the real, persisted boundary IDs (see journaledFirstID/
 	// journaledLastID's doc comment above) — never the live splice IDs,
 	// which can name a synthetic message that will never exist on replay.
-	s.persistCompactLocked(journaledFirstID, journaledLastID, foldTurns, summary, usage)
+	s.persistCompactLocked(journaledFirstID, journaledLastID, foldTurns, summary, usage, startedAt, estimatePromptTokensFromHistory(folded))
 	s.mu.Unlock()
 
 	// Live event surface (§4): the summary flows through the ordinary

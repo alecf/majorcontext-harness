@@ -1320,6 +1320,267 @@ func TestCompactionStartedNotEmittedOnEarlyReturnSkip(t *testing.T) {
 	}
 }
 
+// readSessionRecords scans dir/id's raw session log and returns every
+// decoded record, in journal order — a white-box read-back for a field
+// store.go's own `record` type carries but no Session accessor exposes.
+func readSessionRecords(t *testing.T, dir, id string) []record {
+	t.Helper()
+	data, err := os.ReadFile(sessionPath(dir, id))
+	if err != nil {
+		t.Fatalf("reading session log: %v", err)
+	}
+	var out []record
+	if err := scanLog(data, func(rec record, line int, isLast bool) error {
+		out = append(out, rec)
+		return nil
+	}); err != nil {
+		t.Fatalf("scanLog: %v", err)
+	}
+	return out
+}
+
+// findCompactRecord returns the first recCompact record among recs, or nil.
+func findCompactRecord(recs []record) *record {
+	for i := range recs {
+		if recs[i].Type == recCompact {
+			return &recs[i]
+		}
+	}
+	return nil
+}
+
+// TestCompactJournalsStartAndFoldedSize: a successful compact record must
+// name when the summarization call began and how big the folded range was,
+// not just the turn count and its own end time.
+func TestCompactJournalsStartAndFoldedSize(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 10, OutputTokens: 5}),
+		compactTurn("two", provider.Usage{InputTokens: 20, OutputTokens: 5}),
+		compactTurn("three", provider.Usage{InputTokens: 30, OutputTokens: 5}),
+		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 40, OutputTokens: 8}),
+	}}
+	dir := t.TempDir()
+	s := NewSession(Config{
+		Providers:  provider.Registry{"test": prov},
+		Model:      message.ModelRef{Provider: "test", Model: "m1"},
+		SessionDir: dir,
+	})
+	runTurns(t, s, 3)
+
+	res, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.TurnsFolded != 2 {
+		t.Fatalf("sanity: TurnsFolded = %d, want 2", res.TurnsFolded)
+	}
+
+	rec := findCompactRecord(readSessionRecords(t, dir, s.ID))
+	if rec == nil {
+		t.Fatal("no compact record found in the session log")
+	}
+	if rec.Compact.StartedAt.IsZero() {
+		t.Error("compact record StartedAt is zero, want the instant the summarization call began")
+	}
+	if rec.Compact.StartedAt.After(rec.CreatedAt) {
+		t.Errorf("StartedAt %v is after the record's own CreatedAt %v (the call's own end)", rec.Compact.StartedAt, rec.CreatedAt)
+	}
+
+	// The folded range is turns one and two: user("go"), assistant("one"),
+	// user("go"), assistant("two") — four messages. FoldedTokensEst must
+	// reflect exactly that range, not the six-message history that also
+	// includes the kept turn three, or a size regression here would go
+	// unnoticed.
+	wantEst := estimatePromptTokensFromHistory([]message.Message{
+		{Role: message.RoleUser, Parts: message.Parts{&message.Text{Text: "go"}}},
+		{Role: message.RoleAssistant, Parts: message.Parts{&message.Text{Text: "one"}}},
+		{Role: message.RoleUser, Parts: message.Parts{&message.Text{Text: "go"}}},
+		{Role: message.RoleAssistant, Parts: message.Parts{&message.Text{Text: "two"}}},
+	})
+	if rec.Compact.FoldedTokensEst == nil || *rec.Compact.FoldedTokensEst != wantEst {
+		t.Errorf("FoldedTokensEst = %v, want %d (the folded range only, not the whole history)", rec.Compact.FoldedTokensEst, wantEst)
+	}
+}
+
+// TestCompactStartedAtExcludesEventFanout: StartedAt must be captured after
+// EventCompactionStarted's synchronous OnEvent callback returns, not before
+// it, so a blocked callback (or the server's event fanout it drives) never
+// counts toward the created_at - started_at duration a reader derives. The
+// callback below blocks on a channel the test controls, so the ordering is
+// proved by a happens-before edge rather than by outrunning clock jitter.
+func TestCompactStartedAtExcludesEventFanout(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 20}),
+		compactTurn("three", provider.Usage{InputTokens: 30}),
+		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 40}),
+	}}
+	dir := t.TempDir()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s := NewSession(Config{
+		Providers:  provider.Registry{"test": prov},
+		Model:      message.ModelRef{Provider: "test", Model: "m1"},
+		SessionDir: dir,
+		OnEvent: func(ev Event) {
+			if ev.Type == EventCompactionStarted {
+				close(entered)
+				<-release
+			}
+		},
+	})
+	runTurns(t, s, 3)
+
+	compactDone := make(chan error, 1)
+	go func() {
+		_, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1})
+		compactDone <- err
+	}()
+
+	<-entered
+	releasedAt := time.Now()
+	close(release)
+	if err := <-compactDone; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	rec := findCompactRecord(readSessionRecords(t, dir, s.ID))
+	if rec == nil {
+		t.Fatal("no compact record found in the session log")
+	}
+	if rec.Compact.StartedAt.Before(releasedAt) {
+		t.Errorf("StartedAt = %v, want >= %v: event-delivery time leaked into the recorded start", rec.Compact.StartedAt, releasedAt)
+	}
+}
+
+// TestCompactRecordSurvivesReloadAndReplay: StartedAt/FoldedTokensEst must
+// still be present, unchanged, and readable after LoadSession replays the
+// log, both from the raw record and from LoadJournal's own projection.
+func TestCompactRecordSurvivesReloadAndReplay(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 20}),
+		compactTurn("three", provider.Usage{InputTokens: 30}),
+		compactSummaryTurn("the gist", provider.Usage{InputTokens: 9}),
+	}}
+	dir := t.TempDir()
+	s := NewSession(Config{
+		Providers:  provider.Registry{"test": prov},
+		Model:      message.ModelRef{Provider: "test", Model: "m1"},
+		SessionDir: dir,
+	})
+	runTurns(t, s, 3)
+	if _, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := findCompactRecord(readSessionRecords(t, dir, s.ID))
+	if before == nil || before.Compact.StartedAt.IsZero() || before.Compact.FoldedTokensEst == nil {
+		t.Fatalf("sanity: compact record before reload = %+v", before)
+	}
+
+	loaded, err := LoadSession(s.cfg, s.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got, want := len(loaded.History()), len(s.History()); got != want {
+		t.Fatalf("reloaded history = %d messages, want %d (replay must still splice the summary)", got, want)
+	}
+
+	after := findCompactRecord(readSessionRecords(t, dir, s.ID))
+	if after == nil {
+		t.Fatal("compact record missing after LoadSession")
+	}
+	if !after.Compact.StartedAt.Equal(before.Compact.StartedAt) {
+		t.Errorf("StartedAt after reload = %v, want unchanged %v", after.Compact.StartedAt, before.Compact.StartedAt)
+	}
+	if after.Compact.FoldedTokensEst == nil || *after.Compact.FoldedTokensEst != *before.Compact.FoldedTokensEst {
+		t.Errorf("FoldedTokensEst after reload = %v, want unchanged %v", after.Compact.FoldedTokensEst, before.Compact.FoldedTokensEst)
+	}
+}
+
+// TestCompactRecordPersistsMeasuredZeroFoldedTokensEst: a fold whose own
+// byte estimate is exactly zero (a lone turn short enough that the folded
+// range's estimator floors to zero, not a pre-feature record that never
+// measured one at all) must still appear in the persisted line. `omitempty`
+// on a plain zero value cannot tell those two apart.
+func TestCompactRecordPersistsMeasuredZeroFoldedTokensEst(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("x", provider.Usage{InputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 20}),
+		compactSummaryTurn("SUMMARY", provider.Usage{InputTokens: 30}),
+	}}
+	dir := t.TempDir()
+	s := NewSession(Config{
+		Providers:  provider.Registry{"test": prov},
+		Model:      message.ModelRef{Provider: "test", Model: "m1"},
+		SessionDir: dir,
+	})
+	runTurns(t, s, 2)
+
+	res, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if res.TurnsFolded != 1 {
+		t.Fatalf("sanity: TurnsFolded = %d, want 1 (user(\"go\")+assistant(\"x\"), chosen for a zero byte estimate)", res.TurnsFolded)
+	}
+	if want := estimatePromptTokensFromHistory([]message.Message{
+		{Role: message.RoleUser, Parts: message.Parts{&message.Text{Text: "go"}}},
+		{Role: message.RoleAssistant, Parts: message.Parts{&message.Text{Text: "x"}}},
+	}); want != 0 {
+		t.Fatalf("sanity: chosen fold estimates to %d, want 0", want)
+	}
+
+	data, err := os.ReadFile(sessionPath(dir, s.ID))
+	if err != nil {
+		t.Fatalf("reading session log: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"folded_tokens_est"`)) {
+		t.Error(`persisted record omits "folded_tokens_est" for a measured zero estimate, indistinguishable from a pre-feature record that never measured one`)
+	}
+
+	rec := findCompactRecord(readSessionRecords(t, dir, s.ID))
+	if rec == nil {
+		t.Fatal("no compact record found in the session log")
+	}
+	if rec.Compact.FoldedTokensEst == nil {
+		t.Fatal("FoldedTokensEst is nil, want a non-nil pointer to the measured zero")
+	}
+	if *rec.Compact.FoldedTokensEst != 0 {
+		t.Errorf("FoldedTokensEst = %d, want 0 (the folded turn's own byte estimate)", *rec.Compact.FoldedTokensEst)
+	}
+}
+
+// TestCompactJournalFailureStillSucceeds: an unwritable SessionDir must
+// never fail a compaction. The fold still happens and the caller still
+// gets its result; only PersistErr reports the write failure.
+func TestCompactJournalFailureStillSucceeds(t *testing.T) {
+	prov := &scriptedProvider{name: "test", turns: [][]provider.Event{
+		compactTurn("one", provider.Usage{InputTokens: 10}),
+		compactTurn("two", provider.Usage{InputTokens: 20}),
+		compactTurn("three", provider.Usage{InputTokens: 30}),
+		compactSummaryTurn("the gist", provider.Usage{InputTokens: 9}),
+	}}
+	s := NewSession(Config{
+		Providers:  provider.Registry{"test": prov},
+		Model:      message.ModelRef{Provider: "test", Model: "m1"},
+		SessionDir: unwritableSessionDir(t),
+	})
+	runTurns(t, s, 3)
+
+	res, err := s.Compact(context.Background(), CompactOptions{KeepTurns: 1})
+	if err != nil {
+		t.Fatalf("Compact returned an error on a journaling failure, want it to succeed: %v", err)
+	}
+	if res.TurnsFolded != 2 {
+		t.Fatalf("TurnsFolded = %d, want 2 (the fold must still happen in memory)", res.TurnsFolded)
+	}
+	if s.PersistErr() == nil {
+		t.Error("PersistErr = nil, want an error (the write must have genuinely failed)")
+	}
+}
+
 // TestCompactSurvivesReload is the red-first restart test for §2's
 // "LoadSession replay": a reloaded session replays the compact record and
 // the trimmed history — the summary lands exactly where it did live, and
@@ -1410,7 +1671,7 @@ func TestCompactCorruptRangeIsLoadError(t *testing.T) {
 	s.mu.Lock()
 	s.persistCompactLocked("msg_does_not_exist", "msg_also_missing", 1, message.Message{
 		ID: newID("msg"), Role: message.RoleUser, Parts: message.Parts{&message.Text{Text: "x"}},
-	}, provider.Usage{})
+	}, provider.Usage{}, time.Now().UTC(), 0)
 	s.mu.Unlock()
 
 	if _, err := LoadSession(cfg, s.ID); err == nil {
