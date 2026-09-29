@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -904,6 +905,40 @@ func listObjectFiles(t *testing.T, dir string) []string {
 	})
 	sort.Strings(files)
 	return files
+}
+
+func TestHandleGitChangesUncommittedIncludesUnmergedFiles(t *testing.T) {
+	dir := newGitRepo(t)
+	branch := strings.TrimSpace(runTestGit(t, dir, "branch", "--show-current"))
+	runTestGit(t, dir, "checkout", "-q", "-b", "conflict")
+	writeTestFile(t, filepath.Join(dir, "seed.txt"), "side\n")
+	runTestGit(t, dir, "add", "seed.txt")
+	runTestGit(t, dir, "commit", "-q", "-m", "side")
+	runTestGit(t, dir, "checkout", "-q", branch)
+	writeTestFile(t, filepath.Join(dir, "seed.txt"), "main\n")
+	runTestGit(t, dir, "add", "seed.txt")
+	runTestGit(t, dir, "commit", "-q", "-m", "main")
+	cmd := exec.Command("git", "merge", "conflict")
+	cmd.Dir = dir
+	_, _ = cmd.CombinedOutput()
+	if output := runTestGit(t, dir, "ls-files", "-u"); output == "" {
+		t.Fatal("merge did not leave unmerged index entries")
+	}
+
+	got := gitChangesUncommitted(t, dir)
+	if _, ok := filesByPath(got.Files)["seed.txt"]; !ok {
+		t.Fatalf("Files = %+v, want seed.txt", got.Files)
+	}
+}
+
+func TestHandleGitChangesUncommittedIgnoresStaleIndexStat(t *testing.T) {
+	dir := newGitRepo(t)
+	if err := os.Chtimes(filepath.Join(dir, "seed.txt"), time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitChangesUncommitted(t, dir); len(got.Files) != 0 {
+		t.Fatalf("Files = %+v, want none", got.Files)
+	}
 }
 
 // TestHandleGitChangesIndexNeverWritten: .git/index and .git/objects are both unchanged.
