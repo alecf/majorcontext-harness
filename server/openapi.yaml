@@ -3693,6 +3693,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: >
+            The request body exceeds 1048576 bytes and was refused before
+            being decoded. The question stays parked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /session/{id}/enqueue:
     post:

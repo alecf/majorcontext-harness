@@ -2,6 +2,7 @@ package server
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/majorcontext/harness/engine"
@@ -94,5 +95,23 @@ func TestClaudeCodeQuestionAfterNativeSwitchIsNotAwaitingInput(t *testing.T) {
 	})
 	if resp.StatusCode != 409 {
 		t.Errorf("answer while the model is native: status %d: %s, want 409", resp.StatusCode, data)
+	}
+}
+
+// TestClaudeCodeQuestionAnswerBodyIsBounded pins the unbounded decode: the
+// answer route read r.Body with no limit, so a parked question accepted an
+// arbitrarily large answer and forwarded it to the child as one frame.
+func TestClaudeCodeQuestionAnswerBodyIsBounded(t *testing.T) {
+	h, id := claudeCodeQuestionHarness(t, &scriptedProvider{name: "codex"})
+
+	promptAndWait(t, h, id, "pick a db")
+	resp, data := h.do("POST", "/session/"+id+"/question/toolu_q/answer", map[string]any{
+		"answers": map[string]string{"Which database?": strings.Repeat("x", answerRequestMaxBytes)},
+	})
+	if resp.StatusCode != 413 {
+		t.Fatalf("oversize answer status %d: %s, want 413", resp.StatusCode, data)
+	}
+	if got := lastTurnForQuestion(t, h, id); got.Outcome != "awaiting_input" || got.QuestionCallID != "toolu_q" {
+		t.Errorf("last_turn after a rejected answer = %+v, want the question still parked", got)
 	}
 }

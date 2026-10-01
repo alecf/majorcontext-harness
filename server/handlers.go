@@ -2068,6 +2068,10 @@ func (s *Server) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, promptAsyncResponse{Seq: fromSeq, Status: "started", MessageID: msgID})
 }
 
+// answerRequestMaxBytes bounds an answer body. The answers reach the child
+// as one control frame, and option labels and free text are short.
+const answerRequestMaxBytes = 1 << 20
+
 // handleAnswerQuestion answers the AskUserQuestion call a delegated turn
 // parked on and resumes that turn. It never queues: a busy session is
 // already running a turn, and that turn dismissed the question if it was a
@@ -2081,7 +2085,14 @@ func (s *Server) handleAnswerQuestion(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Answers map[string]string `json:"answers"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, answerRequestMaxBytes)
 	if err := decodeBody(r, &body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf(
+				"request body exceeds the %d-byte limit", answerRequestMaxBytes))
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
