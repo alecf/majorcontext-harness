@@ -257,6 +257,10 @@ func TestClaudeCodeQuestionExtraArgsCannotOverrideParkingFlags(t *testing.T) {
 		{"--permission-prompt-tool=none"},
 		{"--disallowedTools", "Agent"},
 		{"--disallowedTools=Agent"},
+		{"--disallowed-tools", "Agent"},
+		{"--disallowed-tools=Agent"},
+		{"--permission-prompts", "none"},
+		{"--permission-prompts=none"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			s, _ := claudeCodeQuestionSession(t)

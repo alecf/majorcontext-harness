@@ -502,7 +502,7 @@ func (s *Session) runClaudeCodeChild(ctx context.Context, text string, blobs []*
 		// of a repeated option, so an entry here would defeat the hook or ban.
 		for _, arg := range cfg.ExtraArgs {
 			if claudeCodeQuestionOwnedArg(arg) {
-				return nil, fmt.Errorf("engine: claude-code: Config.ClaudeCode.ExtraArgs contains %q, which is engine-owned while Config.ClaudeCode.AskUserQuestion is set; it would override the AskUserQuestion defer hook or the plan-mode ban", arg)
+				return nil, fmt.Errorf("engine: claude-code: Config.ClaudeCode.ExtraArgs contains %q, which is engine-owned while Config.ClaudeCode.AskUserQuestion is set; it would override the AskUserQuestion defer hook, its answer channel, or the plan-mode ban", arg)
 			}
 		}
 	}
@@ -2297,7 +2297,7 @@ func claudeCodeCallHasResult(history []message.Message, callID string) bool {
 // claudeCodeQuestionOwnedArg reports whether an ExtraArgs entry sets one of
 // the options a question-parking argv owns, in either wire form.
 func claudeCodeQuestionOwnedArg(arg string) bool {
-	for _, name := range []string{"--settings", "--permission-prompt-tool", "--disallowedTools"} {
+	for _, name := range []string{"--settings", "--permission-prompt-tool", "--permission-prompts", "--disallowedTools", "--disallowed-tools"} {
 		if arg == name || strings.HasPrefix(arg, name+"=") {
 			return true
 		}

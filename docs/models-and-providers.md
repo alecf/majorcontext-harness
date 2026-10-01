@@ -604,10 +604,11 @@ settled non-goal.
 
 `Config.ClaudeCode.ExtraArgs` follows every engine-owned flag, and the CLI
 keeps the last value of a repeated option. Harness therefore rejects
-`--settings`, `--permission-prompt-tool`, and `--disallowedTools` in
-`ExtraArgs`, in both the separate-value and the `=value` form, whenever a
-turn offers `AskUserQuestion`. Each would defeat the defer hook or the
-plan-mode ban silently.
+`--settings`, `--permission-prompt-tool`, `--permission-prompts`,
+`--disallowedTools`, and its `--disallowed-tools` alias in `ExtraArgs`, in
+both the separate-value and the `=value` form, whenever a turn offers
+`AskUserQuestion`. Each would silently defeat the defer hook, the answer
+channel, or the plan-mode ban.
 
 ### Park
 
