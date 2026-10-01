@@ -2225,6 +2225,12 @@ components:
             "evaluator_exhausted" terminal (Round 6) is the one clear that
             DOES emit turn.end (preceded by goal.cleared and session.error,
             in that order).
+        question_call_id:
+          type: string
+          description: >
+            The parked AskUserQuestion tool-call id on a turn.end event whose
+            outcome is "awaiting_input" — see LastTurn.question_call_id.
+            Absent otherwise.
         system_hash:
           type: string
           description: SHA-256 of the joined system segments (request.meta).
